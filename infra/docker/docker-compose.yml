@@ -1,0 +1,28 @@
+# infra/docker/docker-compose.yml
+# Phase 1: only Postgres. Redis / MinIO / Meilisearch get added in later phases
+# (Level 5+ of the roadmap) once there's an actual app that needs them.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eduos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eduos
+      POSTGRES_PASSWORD: eduos_dev_password
+      POSTGRES_DB: eduos
+    ports:
+      - "5432:5432"
+    volumes:
+      - eduos_pgdata:/var/lib/postgresql/data
+      - ../../services/auth/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eduos -d eduos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  eduos_pgdata:
