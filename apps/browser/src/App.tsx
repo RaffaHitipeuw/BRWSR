@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   TabBar,
   NavigationBar,
-  useBrowserShortcuts,
+  useKeyboardShortcuts,
   ToastContainer,
   NotificationCenter,
   NotificationBell,
@@ -10,7 +10,9 @@ import {
   EDUOS_APPS,
   browser,
 } from "./components";
-import { useTabStore } from "./stores/tabs";
+import { useTabStore, setOnLastTabClose } from "./stores/tabs";
+import { useSession } from "./hooks/useSession";
+import { useHistoryStore } from "./stores/history";
 
 function App() {
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -18,38 +20,80 @@ function App() {
   const addTab = useTabStore((s) => s.addTab);
   const removeTab = useTabStore((s) => s.removeTab);
   const tabs = useTabStore((s) => s.tabs);
+  const navigate = useTabStore((s) => s.navigate);
 
   const [showLauncher, setShowLauncher] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
 
-  // Tab switching - also re-navigate the single shared content webview
-  // to whatever URL that tab was last on, otherwise clicking a tab just
-  // changes which pill is highlighted without changing what's on screen.
+  // Session management
+  const { save } = useSession();
+
+  // Add to history when URL changes
+  const addToHistory = useHistoryStore((s) => s.addItem);
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+
+  // Track history on navigation
+  useEffect(() => {
+    if (activeTab && activeTab.url && activeTab.url.startsWith('http')) {
+      addToHistory(activeTab.url, activeTab.title, activeTab.favicon || null);
+    }
+  }, [activeTab?.url, activeTab?.title, addToHistory]);
+
+  // Save session before unload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      save();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [save]);
+
+  // Navigate to active tab URL on mount and tab switch
+  useEffect(() => {
+    if (activeTabId && activeTab && activeTab.url) {
+      browser.navigate(activeTab.url, activeTabId, "tab_switch");
+    }
+  }, [activeTabId, activeTab?.url]);
+
+  // Set up last tab close handler - closes app when last tab is closed
+  useEffect(() => {
+    setOnLastTabClose(() => {
+      browser.close();
+    });
+  }, []);
+
+  // Tab switching - just update active tab, navigation handled by useEffect
   const handleTabClick = useCallback(
     (tabId: string) => {
       setActiveTab(tabId);
-      const tab = useTabStore.getState().tabs.find((t) => t.id === tabId);
-      if (tab) {
-        browser.navigate(tab.url);
-      }
     },
     [setActiveTab],
   );
 
-  // New tab - navigate browser to Google
+  // New tab - tab already has default URL (Google)
   const handleNewTab = useCallback(() => {
-    addTab();
-    browser.navigate("https://www.google.com");
+    const newTabId = addTab();
+    // Register new tab with backend
+    if (newTabId) {
+      browser.createTab(newTabId);
+    }
   }, [addTab]);
 
-  // Close tab - after closing, the store auto-picks a new active tab;
-  // make sure the shared content webview actually follows it.
+  // Close tab - store auto-creates new tab if none left
   const handleCloseTab = useCallback(
     (tabId: string) => {
+      const state = useTabStore.getState();
+      const wasActive = state.activeTabId === tabId;
+
+      // Close tab in backend
+      browser.closeTab(tabId);
+
       removeTab(tabId);
+
+      // Navigate to new active tab after close
       const newActiveTab = useTabStore.getState().getActiveTab();
-      if (newActiveTab) {
-        browser.navigate(newActiveTab.url);
+      if (newActiveTab && wasActive) {
+        browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch");
       }
     },
     [removeTab],
@@ -57,9 +101,9 @@ function App() {
 
   // Navigate
   const handleNavigate = useCallback((tabId: string, url: string) => {
-    useTabStore.getState().navigate(tabId, url);
-    browser.navigate(url);
-  }, []);
+    navigate(tabId, url);
+    browser.navigate(url, tabId, "typed_url");
+  }, [navigate]);
 
   // Reload
   const handleReload = useCallback(() => {
@@ -77,13 +121,13 @@ function App() {
   }, []);
 
   // Keyboard shortcuts
-  useBrowserShortcuts(
-    handleBack,
-    handleForward,
-    handleReload,
-    handleNewTab,
-    () => activeTabId && handleCloseTab(activeTabId),
-  );
+  useKeyboardShortcuts({
+    onNewTab: handleNewTab,
+    onCloseTab: handleCloseTab,
+    onReload: handleReload,
+    onGoBack: handleBack,
+    onGoForward: handleForward,
+  });
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -115,9 +159,13 @@ function App() {
   );
 
   return (
-    <div className="h-full flex flex-col bg-transparent">
-      {/* Tab Bar */}
-      <TabBar onTabClick={handleTabClick} onNewTab={handleNewTab} onCloseTab={handleCloseTab} />
+    <div className="h-screen w-screen flex flex-col overflow-hidden">
+      {/* Tab Bar - always on top */}
+      <TabBar
+        onTabClick={handleTabClick}
+        onNewTab={handleNewTab}
+        onCloseTab={handleCloseTab}
+      />
 
       {/* Navigation Bar */}
       <NavigationBar
@@ -138,12 +186,7 @@ function App() {
           title="App Launcher (Ctrl+K)"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0 3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9a9 9 0 01-9-9" />
           </svg>
         </button>
       </div>

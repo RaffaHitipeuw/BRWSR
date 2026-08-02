@@ -35,6 +35,7 @@ interface TabStore {
   memoryUsage: number;
 
   // Tab actions
+  setTabs: (tabs: Tab[]) => void;
   addTab: (url?: string, options?: { groupId?: string; isPinned?: boolean }) => string;
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -68,6 +69,10 @@ interface TabStore {
   enforceMemoryLimits: () => void;
   setMaxTabs: (max: number) => void;
 
+  // Tab restore (Ctrl+Shift+T)
+  restoreTab: () => Tab | null;
+  getClosedTabs: () => Tab[];
+
   // State
   getActiveTab: () => Tab | undefined;
   getTabsByGroup: (groupId?: string) => Tab[];
@@ -75,15 +80,23 @@ interface TabStore {
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
-const DEFAULT_HOME = "https://www.google.com";
-const DEFAULT_MAX_TABS = 20;
+const DEFAULT_HOME = "https://www.google.com"; // Google on open
+const DEFAULT_MAX_TABS = 5;
 const MEMORY_LIMIT_PER_TAB_MB = 100;
+
+// Tab restore queue for Ctrl+Shift+T
+let closedTabs: Tab[] = [];
+let onLastTabClose: (() => void) | null = null;
+
+export function setOnLastTabClose(callback: () => void) {
+  onLastTabClose = callback;
+}
 
 const createDefaultTab = (url?: string): Tab => {
   const tabUrl = url || DEFAULT_HOME;
   return {
     id: generateId(),
-    title: tabUrl.includes("google") ? "Google" : "New Tab",
+    title: "New Tab",
     url: tabUrl,
     history: [tabUrl],
     historyIndex: 0,
@@ -105,6 +118,10 @@ export const useTabStore = create<TabStore>()(
       groups: [],
       maxTabs: DEFAULT_MAX_TABS,
       memoryUsage: 0,
+
+      setTabs: (tabs: Tab[]) => {
+        set({ tabs, activeTabId: tabs[0]?.id || null });
+      },
 
       addTab: (url?: string, options?: { groupId?: string; isPinned?: boolean }) => {
         const state = get();
@@ -165,46 +182,48 @@ export const useTabStore = create<TabStore>()(
       },
 
       removeTab: (id: string) => {
-        set((state) => {
-          const tabToRemove = state.tabs.find((t) => t.id === id);
-          if (!tabToRemove) return state;
+        const state = get();
+        const tabToRemove = state.tabs.find((t) => t.id === id);
+        if (!tabToRemove) return;
 
-          // Don't remove if it's the only tab and it's pinned
-          const pinnedCount = state.tabs.filter((t) => t.isPinned).length;
-          if (state.tabs.length === 1 && pinnedCount === 1) {
-            return state;
+        // Don't remove if it's the only tab and it's pinned
+        const pinnedCount = state.tabs.filter((t) => t.isPinned).length;
+        if (state.tabs.length === 1 && pinnedCount === 1) {
+          return;
+        }
+
+        // Save closed tab for Ctrl+Shift+T restore
+        closedTabs.push({ ...tabToRemove, lastAccessedAt: Date.now() });
+        // Keep only last 20 closed tabs
+        if (closedTabs.length > 20) {
+          closedTabs = closedTabs.slice(-20);
+        }
+
+        const newTabs = state.tabs.filter((tab) => tab.id !== id);
+
+        // If this was the last tab, signal app to close instead of creating new tab
+        if (newTabs.length === 0) {
+          if (onLastTabClose) {
+            onLastTabClose();
           }
+          return;
+        }
 
-          const newTabs = state.tabs.filter((tab) => tab.id !== id);
+        // If removing active tab, switch to another
+        let newActiveTabId = state.activeTabId;
+        if (state.activeTabId === id) {
+          const removedIndex = state.tabs.findIndex((tab) => tab.id === id);
+          newActiveTabId =
+            newTabs[Math.min(removedIndex, newTabs.length - 1)]?.id || newTabs[0].id;
+        }
 
-          // If no tabs left, create a new one
-          if (newTabs.length === 0) {
-            return {
-              tabs: [createDefaultTab()],
-              activeTabId: null,
-              groups: state.groups.map((g) => ({
-                ...g,
-                tabIds: g.tabIds.filter((tid) => tid !== id),
-              })),
-            };
-          }
-
-          // If removing active tab, switch to another
-          let newActiveTabId = state.activeTabId;
-          if (state.activeTabId === id) {
-            const removedIndex = state.tabs.findIndex((tab) => tab.id === id);
-            newActiveTabId =
-              newTabs[Math.min(removedIndex, newTabs.length - 1)]?.id || newTabs[0].id;
-          }
-
-          return {
-            tabs: newTabs,
-            activeTabId: newActiveTabId,
-            groups: state.groups.map((g) => ({
-              ...g,
-              tabIds: g.tabIds.filter((tid) => tid !== id),
-            })),
-          };
+        set({
+          tabs: newTabs,
+          activeTabId: newActiveTabId,
+          groups: state.groups.map((g) => ({
+            ...g,
+            tabIds: g.tabIds.filter((tid) => tid !== id),
+          })),
         });
       },
 
@@ -472,6 +491,22 @@ export const useTabStore = create<TabStore>()(
         get().enforceMemoryLimits();
       },
 
+      restoreTab: () => {
+        if (closedTabs.length === 0) return null;
+        const tab = closedTabs.pop()!;
+        const id = generateId();
+        const restoredTab = { ...tab, id, isLoading: false };
+        set((state) => ({
+          tabs: [...state.tabs, restoredTab],
+          activeTabId: id,
+        }));
+        return restoredTab;
+      },
+
+      getClosedTabs: () => {
+        return [...closedTabs];
+      },
+
       getActiveTab: () => {
         const state = get();
         return state.tabs.find((tab) => tab.id === state.activeTabId);
@@ -490,13 +525,19 @@ export const useTabStore = create<TabStore>()(
     {
       name: "eduos-browser-tabs",
       partialize: (state) => ({
-        tabs: state.tabs,
-        activeTabId: state.activeTabId,
+        // Only save pinned tabs and settings, not all tabs
+        tabs: state.tabs.filter((t) => t.isPinned),
+        activeTabId: state.tabs.find((t) => t.isPinned)?.id || null,
         groups: state.groups,
         maxTabs: state.maxTabs,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
+          // Always start with 1 fresh tab on app open
+          const newTab = createDefaultTab();
+          state.tabs = [newTab];
+          state.activeTabId = newTab.id;
+
           if (!state.activeTabId && state.tabs.length > 0) {
             state.activeTabId = state.tabs[0].id;
           }

@@ -1,4 +1,10 @@
-export { useTabStore } from "./tabs";
+export { useTabStore, setOnLastTabClose } from "./tabs";
 export type { Tab, TabGroup } from "./tabs";
 export { useNotificationStore, notify } from "./notifications";
 export type { Notification, NotificationType } from "./notifications";
+export { useSessionStore } from "./session";
+export { useSettingsStore } from "./settings";
+export { useDownloadsStore } from "./downloads";
+export { useHistoryStore } from "./history";
+export { useBookmarksStore } from "./bookmarks";
+export { usePasswordStore } from "./passwords";
