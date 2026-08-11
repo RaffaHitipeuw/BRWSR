@@ -1,23 +1,25 @@
 // Session store - simplified and clean
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+interface SessionTab {
+  url: string;
+  title?: string;
+  favicon?: string;
+}
 
 interface Session {
   id: string;
   savedAt: number;
-  tabs: Array<{
-    url: string;
-    title?: string;
-    favicon?: string;
-  }>;
+  tabs: SessionTab[];
   activeTabId: string | null;
 }
 
 interface SessionStore {
   lastSession: Session | null;
   savedSessions: Session[];
-  saveSession: (tabs: any[], activeTabId: string | null) => Session;
+  saveSession: (tabs: SessionTab[], activeTabId: string | null) => Session;
   getLastSession: () => Session | null;
   getSessionTabs: (sessionId?: string) => Array<{ url: string; title?: string; favicon?: string }>;
   clearSession: () => void;
@@ -35,7 +37,7 @@ export const useSessionStore = create<SessionStore>()(
         const session = {
           id: `session-${Date.now()}`,
           savedAt: Date.now(),
-          tabs: tabs.map((tab: any) => ({
+          tabs: tabs.map((tab: SessionTab) => ({
             url: tab.url,
             title: tab.title,
             favicon: tab.favicon,
@@ -46,10 +48,10 @@ export const useSessionStore = create<SessionStore>()(
         set({ lastSession: session });
 
         set((state) => ({
-          savedSessions: [
-            session,
-            ...state.savedSessions.filter((s) => s.id !== session.id),
-          ].slice(0, 10),
+          savedSessions: [session, ...state.savedSessions.filter((s) => s.id !== session.id)].slice(
+            0,
+            10,
+          ),
         }));
 
         return session;
@@ -75,7 +77,7 @@ export const useSessionStore = create<SessionStore>()(
       clearAllSessions: () => set({ savedSessions: [] }),
     }),
     {
-      name: 'eduos-browser-session',
-    }
-  )
+      name: "eduos-browser-session",
+    },
+  ),
 );

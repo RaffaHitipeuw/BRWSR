@@ -1,10 +1,14 @@
 // useSearchSuggestions - Hook for search suggestions with debounce
 
-import { useState, useEffect, useCallback } from 'react';
-import { debounce } from '../utils/performance';
-import { getSuggestions, updateBookmarkSuggestions, updateHistorySuggestions } from '../services/searchSuggestion';
-import { useBookmarksStore } from '../stores/bookmarks';
-import { useHistoryStore } from '../stores/history';
+import { useState, useEffect, useCallback } from "react";
+import { debounce } from "../utils/performance";
+import {
+  getSuggestions,
+  updateBookmarkSuggestions,
+  updateHistorySuggestions,
+} from "../services/searchSuggestion";
+import { useBookmarksStore } from "../stores/bookmarks";
+import { useHistoryStore } from "../stores/history";
 
 interface Suggestion {
   type: string;
@@ -15,7 +19,7 @@ interface Suggestion {
 }
 
 export function useSearchSuggestions() {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -37,21 +41,24 @@ export function useSearchSuggestions() {
         return;
       }
 
-      const results = getSuggestions(q, 'google');
+      const results = getSuggestions(q, "google");
       setSuggestions(results);
       setIsLoading(false);
     }, 300),
-    []
+    [],
   );
 
-  const handleQueryChange = useCallback((newQuery: string) => {
-    setQuery(newQuery);
-    setIsLoading(newQuery.length > 0);
-    debouncedSearch(newQuery);
-  }, [debouncedSearch]);
+  const handleQueryChange = useCallback(
+    (newQuery: string) => {
+      setQuery(newQuery);
+      setIsLoading(newQuery.length > 0);
+      debouncedSearch(newQuery);
+    },
+    [debouncedSearch],
+  );
 
   const clearSuggestions = useCallback(() => {
-    setQuery('');
+    setQuery("");
     setSuggestions([]);
     setIsLoading(false);
   }, []);

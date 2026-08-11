@@ -1,24 +1,24 @@
 // Settings store - simplified and clean
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 const DEFAULT_SETTINGS = {
-  theme: 'light',
+  theme: "light",
   zoom: 100,
   showHomeButton: true,
-  searchEngine: 'google',
-  homepage: 'https://www.google.com',
-  startPage: 'newTab',
+  searchEngine: "google",
+  homepage: "https://www.google.com",
+  startPage: "newTab",
   blockPopups: true,
   sendDoNotTrack: true,
   historyDownload: {
     enabled: false,
-    gasUrl: '',
+    gasUrl: "",
     autoSync: false,
     syncInterval: 30,
   },
-  downloadPath: '',
+  downloadPath: "",
   downloadPrompt: true,
 };
 
@@ -72,7 +72,7 @@ export const useSettingsStore = create<SettingsStore>()(
       resetZoom: () => set({ zoom: 100 }),
 
       setTheme: (theme) => set({ theme }),
-      toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
+      toggleTheme: () => set((s) => ({ theme: s.theme === "light" ? "dark" : "light" })),
 
       toggleHome: () => set((s) => ({ showHomeButton: !s.showHomeButton })),
       setHomepage: (url) => set({ homepage: url }),
@@ -84,26 +84,32 @@ export const useSettingsStore = create<SettingsStore>()(
       setBlockPopups: (block) => set({ blockPopups: block }),
       setSendDoNotTrack: (send) => set({ sendDoNotTrack: send }),
 
-      setHistoryDownloadEnabled: (enabled) => set((s) => ({
-        historyDownload: { ...s.historyDownload, enabled },
-      })),
+      setHistoryDownloadEnabled: (enabled) =>
+        set((s) => ({
+          historyDownload: { ...s.historyDownload, enabled },
+        })),
 
       setGasUrl: (url) => {
-        if (url && !url.includes('script.google.com')) {
-          console.warn('Invalid GAS URL');
+        if (url && !url.includes("script.google.com")) {
+          console.warn("Invalid GAS URL");
           return false;
         }
         set((s) => ({ historyDownload: { ...s.historyDownload, gasUrl: url } }));
         return true;
       },
 
-      setAutoSync: (autoSync) => set((s) => ({
-        historyDownload: { ...s.historyDownload, autoSync },
-      })),
+      setAutoSync: (autoSync) =>
+        set((s) => ({
+          historyDownload: { ...s.historyDownload, autoSync },
+        })),
 
-      setSyncInterval: (minutes) => set((s) => ({
-        historyDownload: { ...s.historyDownload, syncInterval: Math.max(5, Math.min(1440, minutes)) },
-      })),
+      setSyncInterval: (minutes) =>
+        set((s) => ({
+          historyDownload: {
+            ...s.historyDownload,
+            syncInterval: Math.max(5, Math.min(1440, minutes)),
+          },
+        })),
 
       setDownloadPath: (path) => set({ downloadPath: path }),
       setDownloadPrompt: (prompt) => set({ downloadPrompt: prompt }),
@@ -111,7 +117,7 @@ export const useSettingsStore = create<SettingsStore>()(
       resetToDefaults: () => set({ ...DEFAULT_SETTINGS }),
     }),
     {
-      name: 'eduos-browser-settings',
+      name: "eduos-browser-settings",
       partialize: (s) => ({
         theme: s.theme,
         zoom: s.zoom,
@@ -125,6 +131,6 @@ export const useSettingsStore = create<SettingsStore>()(
         downloadPath: s.downloadPath,
         downloadPrompt: s.downloadPrompt,
       }),
-    }
-  )
+    },
+  ),
 );

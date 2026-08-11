@@ -1,7 +1,7 @@
 // Bookmarks store - optimized with memory management
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 const MAX_BOOKMARKS = 50; // Kurangin dari 200 ke 50
 
@@ -31,7 +31,7 @@ export const useBookmarksStore = create<BookmarksStore>()(
     (set, get) => ({
       items: [],
 
-      addBookmark: (url, title = '', favicon = '') => {
+      addBookmark: (url, title = "", favicon = "") => {
         if (get().items.some((item) => item.url === url)) return false;
 
         const newBookmark: BookmarkItem = {
@@ -67,9 +67,7 @@ export const useBookmarksStore = create<BookmarksStore>()(
 
       updateBookmark: (id, updates) => {
         set((state) => ({
-          items: state.items.map((item) =>
-            item.id === id ? { ...item, ...updates } : item
-          ),
+          items: state.items.map((item) => (item.id === id ? { ...item, ...updates } : item)),
         }));
       },
 
@@ -90,17 +88,15 @@ export const useBookmarksStore = create<BookmarksStore>()(
       search: (query) => {
         const q = query.toLowerCase();
         return get().items.filter(
-          (item) =>
-            item.title.toLowerCase().includes(q) ||
-            item.url.toLowerCase().includes(q)
+          (item) => item.title.toLowerCase().includes(q) || item.url.toLowerCase().includes(q),
         );
       },
     }),
     {
-      name: 'eduos-browser-bookmarks',
+      name: "eduos-browser-bookmarks",
       partialize: (state) => ({
         items: state.items.slice(0, MAX_BOOKMARKS),
       }),
-    }
-  )
+    },
+  ),
 );

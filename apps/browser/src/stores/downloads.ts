@@ -1,7 +1,7 @@
 // Downloads store - simplified and clean
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface DownloadItem {
   id: string;
@@ -9,7 +9,7 @@ interface DownloadItem {
   url: string;
   totalBytes: number;
   received: number;
-  status: 'downloading' | 'completed' | 'cancelled' | 'interrupted';
+  status: "downloading" | "completed" | "cancelled" | "interrupted";
   startTime: number;
   endTime: number | null;
 }
@@ -45,7 +45,7 @@ export const useDownloadsStore = create<DownloadsStore>()(
           url,
           totalBytes,
           received: 0,
-          status: 'downloading',
+          status: "downloading",
           startTime: Date.now(),
           endTime: null,
         };
@@ -62,7 +62,7 @@ export const useDownloadsStore = create<DownloadsStore>()(
           items: state.items.map((item) =>
             item.id === id
               ? { ...item, received, totalBytes: totalBytes || item.totalBytes }
-              : item
+              : item,
           ),
         }));
       },
@@ -71,8 +71,8 @@ export const useDownloadsStore = create<DownloadsStore>()(
         set((state) => ({
           items: state.items.map((item) =>
             item.id === id
-              ? { ...item, status: 'completed', received: item.totalBytes, endTime: Date.now() }
-              : item
+              ? { ...item, status: "completed", received: item.totalBytes, endTime: Date.now() }
+              : item,
           ),
         }));
       },
@@ -80,7 +80,7 @@ export const useDownloadsStore = create<DownloadsStore>()(
       cancelDownload: (id) => {
         set((state) => ({
           items: state.items.map((item) =>
-            item.id === id ? { ...item, status: 'cancelled', endTime: Date.now() } : item
+            item.id === id ? { ...item, status: "cancelled", endTime: Date.now() } : item,
           ),
         }));
       },
@@ -88,7 +88,7 @@ export const useDownloadsStore = create<DownloadsStore>()(
       interruptDownload: (id) => {
         set((state) => ({
           items: state.items.map((item) =>
-            item.id === id ? { ...item, status: 'interrupted', endTime: Date.now() } : item
+            item.id === id ? { ...item, status: "interrupted", endTime: Date.now() } : item,
           ),
         }));
       },
@@ -101,7 +101,7 @@ export const useDownloadsStore = create<DownloadsStore>()(
 
       clearCompleted: () => {
         set((state) => ({
-          items: state.items.filter((item) => item.status !== 'completed'),
+          items: state.items.filter((item) => item.status !== "completed"),
         }));
       },
 
@@ -112,18 +112,18 @@ export const useDownloadsStore = create<DownloadsStore>()(
       getTotalDownloaded: () => get().items.reduce((total, item) => total + item.received, 0),
 
       formatBytes: (bytes) => {
-        if (bytes === 0) return '0 B';
+        if (bytes === 0) return "0 B";
         const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const sizes = ["B", "KB", "MB", "GB", "TB"];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
       },
     }),
     {
-      name: 'eduos-browser-downloads',
+      name: "eduos-browser-downloads",
       partialize: (state) => ({
         items: state.items.slice(0, 20), // Limit to 20 items
       }),
-    }
-  )
+    },
+  ),
 );

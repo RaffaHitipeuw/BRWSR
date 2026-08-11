@@ -1,8 +1,15 @@
 // useKeyboardShortcuts - unified keyboard shortcuts
 
-import { useEffect, useCallback } from 'react';
-import { useTabStore } from '../stores/tabs';
-import { useSessionStore } from '../stores/session';
+import { useEffect, useCallback } from "react";
+import { useTabStore } from "../stores/tabs";
+import { useSessionStore } from "../stores/session";
+import type { Tab } from "../stores/types";
+
+interface SessionTab {
+  url: string;
+  title?: string;
+  favicon?: string;
+}
 
 export function useKeyboardShortcuts({
   onNewTab,
@@ -19,10 +26,9 @@ export function useKeyboardShortcuts({
 }) {
   const tabs = useTabStore((s) => s.tabs);
   const activeTabId = useTabStore((s) => s.activeTabId);
-  const setTabs = useTabStore((s) => s.setTabs as any);
+  const setTabs = useTabStore((s) => s.setTabs);
   const setActiveTab = useTabStore((s) => s.setActiveTab);
   const restoreTab = useTabStore((s) => s.restoreTab);
-  const getClosedTabs = useTabStore((s) => s.getClosedTabs);
   const saveSession = useSessionStore((s) => s.saveSession);
   const getLastSession = useSessionStore((s) => s.getLastSession);
   const clearSession = useSessionStore((s) => s.clearSession);
@@ -31,11 +37,11 @@ export function useKeyboardShortcuts({
   const restoreSession = useCallback(() => {
     const lastSession = getLastSession();
     if (lastSession && lastSession.tabs && lastSession.tabs.length > 0) {
-      const tabsToRestore = lastSession.tabs.map((t: any, i: number) => ({
+      const tabsToRestore = (lastSession.tabs as SessionTab[]).map((t, i) => ({
         id: `tab-${Date.now()}-${i}`,
         url: t.url,
         title: t.title || t.url,
-        favicon: t.favicon || '',
+        favicon: t.favicon || "",
         history: [t.url],
         historyIndex: 0,
         isLoading: false,
@@ -46,12 +52,12 @@ export function useKeyboardShortcuts({
         createdAt: Date.now(),
         lastAccessedAt: Date.now(),
       }));
-      setTabs(tabsToRestore);
+      setTabs(tabsToRestore as Tab[]);
       if (tabsToRestore.length > 0) {
         setActiveTab(tabsToRestore[0].id);
       }
       clearSession();
-      console.log('Session restored:', tabsToRestore.length, 'tabs');
+      console.log("Session restored:", tabsToRestore.length, "tabs");
       return true;
     }
     return false;
@@ -65,17 +71,16 @@ export function useKeyboardShortcuts({
       }
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [tabs, activeTabId, saveSession]);
 
   // Register keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' ||
-                      target.tagName === 'TEXTAREA' ||
-                      target.isContentEditable;
+      const isInput =
+        target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
 
       // Skip if typing in input
       if (isInput) return;
@@ -83,54 +88,54 @@ export function useKeyboardShortcuts({
       const ctrl = e.ctrlKey || e.metaKey;
 
       // Ctrl+T: New tab
-      if (ctrl && e.key === 't') {
+      if (ctrl && e.key === "t") {
         e.preventDefault();
         onNewTab?.();
         return;
       }
 
       // Ctrl+W: Close tab
-      if (ctrl && e.key === 'w') {
+      if (ctrl && e.key === "w") {
         e.preventDefault();
         if (activeTabId) onCloseTab?.(activeTabId);
         return;
       }
 
       // Ctrl+R: Reload
-      if (ctrl && e.key === 'r') {
+      if (ctrl && e.key === "r") {
         e.preventDefault();
         onReload?.();
         return;
       }
 
       // F5: Reload
-      if (e.key === 'F5') {
+      if (e.key === "F5") {
         e.preventDefault();
         onReload?.();
         return;
       }
 
       // Alt+Left: Back
-      if (e.altKey && e.key === 'ArrowLeft') {
+      if (e.altKey && e.key === "ArrowLeft") {
         e.preventDefault();
         onGoBack?.();
         return;
       }
 
       // Alt+Right: Forward
-      if (e.altKey && e.key === 'ArrowRight') {
+      if (e.altKey && e.key === "ArrowRight") {
         e.preventDefault();
         onGoForward?.();
         return;
       }
 
       // Ctrl+Shift+T: Restore last closed tab, or session if no closed tabs
-      if (ctrl && e.shiftKey && e.key === 'T') {
+      if (ctrl && e.shiftKey && e.key === "T") {
         e.preventDefault();
         // Try to restore individual closed tab first
         const restored = restoreTab();
         if (restored) {
-          console.log('Restored closed tab:', restored.url);
+          console.log("Restored closed tab:", restored.url);
         } else {
           // Fall back to session restore
           restoreSession();
@@ -139,8 +144,8 @@ export function useKeyboardShortcuts({
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     activeTabId,
     onNewTab,
@@ -148,7 +153,8 @@ export function useKeyboardShortcuts({
     onReload,
     onGoBack,
     onGoForward,
-    restoreSession
+    restoreSession,
+    restoreTab,
   ]);
 
   return { restoreSession };

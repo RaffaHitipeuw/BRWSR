@@ -1,7 +1,7 @@
 // History store - optimized with memory management
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 const MAX_HISTORY_ITEMS = 100; // Kurangin dari 500 ke 100
 
@@ -36,11 +36,11 @@ export const useHistoryStore = create<HistoryStore>()(
       items: [],
       isEnabled: true,
 
-      addItem: (url, title = '', favicon = null) => {
-        if (!get().isEnabled || !url?.startsWith('http')) return;
+      addItem: (url, title = "", favicon = null) => {
+        if (!get().isEnabled || !url?.startsWith("http")) return;
 
         const recentItems = get().items.slice(0, 10);
-        const isDuplicate = recentItems.some(item => item.url === url);
+        const isDuplicate = recentItems.some((item) => item.url === url);
         if (isDuplicate) return;
 
         const newItem: HistoryItem = {
@@ -74,15 +74,13 @@ export const useHistoryStore = create<HistoryStore>()(
       search: (query) => {
         const q = query.toLowerCase();
         return get().items.filter(
-          (item) =>
-            item.url.toLowerCase().includes(q) ||
-            item.title?.toLowerCase().includes(q)
+          (item) => item.url.toLowerCase().includes(q) || item.title?.toLowerCase().includes(q),
         );
       },
 
       getByDateRange: (startDate, endDate) => {
         return get().items.filter(
-          (item) => item.timestamp >= startDate && item.timestamp <= endDate
+          (item) => item.timestamp >= startDate && item.timestamp <= endDate,
         );
       },
 
@@ -96,23 +94,23 @@ export const useHistoryStore = create<HistoryStore>()(
       },
 
       exportAsCSV: () => {
-        const headers = ['Timestamp', 'Title', 'URL'];
+        const headers = ["Timestamp", "Title", "URL"];
         const rows = get().items.map((item) => [
           new Date(item.timestamp).toISOString(),
-          `"${(item.title || '').replace(/"/g, '""')}"`,
-          `"${(item.url || '').replace(/"/g, '""')}"`,
+          `"${(item.title || "").replace(/"/g, '""')}"`,
+          `"${(item.url || "").replace(/"/g, '""')}"`,
         ]);
-        return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+        return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
       },
 
       exportAsJSON: () => JSON.stringify(get().items, null, 2),
     }),
     {
-      name: 'eduos-browser-history',
+      name: "eduos-browser-history",
       partialize: (state) => ({
         items: state.items.slice(0, MAX_HISTORY_ITEMS),
         isEnabled: state.isEnabled,
       }),
-    }
-  )
+    },
+  ),
 );

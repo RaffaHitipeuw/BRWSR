@@ -3,9 +3,10 @@
 /**
  * Debounce function - delays execution until after wait milliseconds
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function debounce<T extends (...args: any[]) => any>(
   func: T,
-  wait: number = 300
+  wait: number = 300,
 ): (...args: Parameters<T>) => void {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   return function executedFunction(...args: Parameters<T>) {
@@ -21,9 +22,10 @@ export function debounce<T extends (...args: any[]) => any>(
 /**
  * Throttle function - executes at most once per wait milliseconds
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function throttle<T extends (...args: any[]) => any>(
   func: T,
-  wait: number = 300
+  wait: number = 300,
 ): (...args: Parameters<T>) => void {
   let lastTime = 0;
   let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -52,6 +54,7 @@ export function throttle<T extends (...args: any[]) => any>(
 /**
  * Create a simple LRU cache
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createLRUCache<T = any>(maxSize: number = 100) {
   const cache = new Map<string, T>();
 
@@ -119,6 +122,7 @@ export function chunkArray<T>(array: T[], size: number): T[][] {
 /**
  * Safe JSON parse with fallback
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function safeJSONParse<T = any>(str: string, fallback: T | null = null): T | null {
   try {
     return JSON.parse(str);

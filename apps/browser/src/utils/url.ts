@@ -1,17 +1,17 @@
 // URL utilities
 
 // Default homepage - Google
-export const DEFAULT_HOME = 'https://www.google.com';
+export const DEFAULT_HOME = "https://www.google.com";
 
 // Search engine URLs
 export const SEARCH_ENGINES: Record<string, string> = {
-  google: 'https://www.google.com/search?q=',
-  bing: 'https://www.bing.com/search?q=',
-  duckduckgo: 'https://duckduckgo.com/?q=',
+  google: "https://www.google.com/search?q=",
+  bing: "https://www.bing.com/search?q=",
+  duckduckgo: "https://duckduckgo.com/?q=",
 };
 
 // Default search engine
-export const DEFAULT_SEARCH = 'google';
+export const DEFAULT_SEARCH = "google";
 
 /**
  * Parse and validate URL
@@ -20,24 +20,24 @@ export function parseUrl(input: string, searchEngine: string = DEFAULT_SEARCH) {
   const trimmed = input.trim();
 
   if (!trimmed) {
-    return { url: DEFAULT_HOME, type: 'home' };
+    return { url: DEFAULT_HOME, type: "home" };
   }
 
   // Already a valid URL
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return { url: trimmed, type: 'url' };
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return { url: trimmed, type: "url" };
   }
 
   // Has domain pattern (e.g., example.com)
-  if (trimmed.includes('.') && !trimmed.includes(' ')) {
-    return { url: `https://${trimmed}`, type: 'url' };
+  if (trimmed.includes(".") && !trimmed.includes(" ")) {
+    return { url: `https://${trimmed}`, type: "url" };
   }
 
   // Search query - use Google
   const searchUrl = SEARCH_ENGINES[searchEngine] || SEARCH_ENGINES.google;
   return {
     url: `${searchUrl}${encodeURIComponent(trimmed)}`,
-    type: 'search'
+    type: "search",
   };
 }
 
@@ -76,5 +76,5 @@ export function isValidUrl(string: string) {
  * Check if URL is secure (https)
  */
 export function isSecureUrl(url: string) {
-  return url?.startsWith('https://');
+  return url?.startsWith("https://");
 }

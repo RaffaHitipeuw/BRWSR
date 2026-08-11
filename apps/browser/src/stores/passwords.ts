@@ -1,7 +1,7 @@
 // Password Manager Store
 
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface PasswordItem {
   id: string;
@@ -30,7 +30,7 @@ interface PasswordStore {
 
 function extractDomain(url: string): string {
   try {
-    return new URL(url).hostname.replace(/^www\./, '');
+    return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return url;
   }
@@ -41,10 +41,8 @@ export const usePasswordStore = create<PasswordStore>()(
     (set, get) => ({
       passwords: [],
 
-      addPassword: (url, username, password, notes = '') => {
-        const exists = get().passwords.some(
-          (p) => p.url === url && p.username === username
-        );
+      addPassword: (url, username, password, notes = "") => {
+        const exists = get().passwords.some((p) => p.url === url && p.username === username);
         if (exists) return false;
 
         const newPassword: PasswordItem = {
@@ -67,7 +65,7 @@ export const usePasswordStore = create<PasswordStore>()(
       updatePassword: (id, updates) => {
         set((state) => ({
           passwords: state.passwords.map((p) =>
-            p.id === id ? { ...p, ...updates, updatedAt: Date.now() } : p
+            p.id === id ? { ...p, ...updates, updatedAt: Date.now() } : p,
           ),
         }));
       },
@@ -87,16 +85,13 @@ export const usePasswordStore = create<PasswordStore>()(
       getPasswordsForUrl: (url) => {
         if (!url) return [];
         const domain = extractDomain(url);
-        return get().passwords.filter((p) =>
-          extractDomain(p.url) === domain
-        );
+        return get().passwords.filter((p) => extractDomain(p.url) === domain);
       },
 
       findPassword: (url, username) => {
         if (!url || !username) return undefined;
         return get().passwords.find(
-          (p) => extractDomain(p.url) === extractDomain(url) &&
-                 p.username === username
+          (p) => extractDomain(p.url) === extractDomain(url) && p.username === username,
         );
       },
 
@@ -113,7 +108,7 @@ export const usePasswordStore = create<PasswordStore>()(
           (p) =>
             p.url.toLowerCase().includes(q) ||
             p.username.toLowerCase().includes(q) ||
-            p.notes?.toLowerCase().includes(q)
+            p.notes?.toLowerCase().includes(q),
         );
       },
 
@@ -122,11 +117,9 @@ export const usePasswordStore = create<PasswordStore>()(
       importPasswords: (jsonData) => {
         try {
           const data = JSON.parse(jsonData);
-          if (!Array.isArray(data)) return { success: false, error: 'Invalid format' };
+          if (!Array.isArray(data)) return { success: false, error: "Invalid format" };
 
-          const newPasswords = data.filter(
-            (p) => p.url && p.username && p.password
-          );
+          const newPasswords = data.filter((p) => p.url && p.username && p.password);
 
           set((state) => ({
             passwords: [...newPasswords, ...state.passwords],
@@ -141,7 +134,7 @@ export const usePasswordStore = create<PasswordStore>()(
       clearAll: () => set({ passwords: [] }),
     }),
     {
-      name: 'eduos-browser-passwords',
-    }
-  )
+      name: "eduos-browser-passwords",
+    },
+  ),
 );

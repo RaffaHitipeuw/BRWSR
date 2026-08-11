@@ -5,11 +5,11 @@
  */
 export function getStorageStats() {
   const keys = [
-    'eduos-browser-tabs',
-    'eduos-browser-history',
-    'eduos-browser-downloads',
-    'eduos-browser-session',
-    'eduos-browser-settings',
+    "eduos-browser-tabs",
+    "eduos-browser-history",
+    "eduos-browser-downloads",
+    "eduos-browser-session",
+    "eduos-browser-settings",
   ];
 
   let total = 0;
@@ -33,10 +33,10 @@ export function getStorageStats() {
  */
 export function clearAllData() {
   const keys = [
-    'eduos-browser-tabs',
-    'eduos-browser-history',
-    'eduos-browser-downloads',
-    'eduos-browser-session',
+    "eduos-browser-tabs",
+    "eduos-browser-history",
+    "eduos-browser-downloads",
+    "eduos-browser-session",
   ];
   for (const key of keys) {
     localStorage.removeItem(key);
