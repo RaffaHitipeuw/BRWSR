@@ -1,0 +1,246 @@
+{
+  "run_id": "run-1786374760759",
+  "timestamp": 1786374760759,
+  "methodology": {
+    "warmup_seconds": 30,
+    "measurement_seconds": 60,
+    "sampling_interval_ms": 500,
+    "memory_metric": "RESIDENT_MEMORY_MB",
+    "peak_definition": "max(group_memory_mb) during measurement window",
+    "runs": 1,
+    "description": "Standard benchmark methodology"
+  },
+  "environment": {
+    "os": "windows",
+    "os_version": "Windows",
+    "ram_mb": 16118,
+    "cpu_brand": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cpu_count": 8,
+    "webview2_version": null,
+    "app_version": "0.1.0",
+    "build_type": "release"
+  },
+  "comparison": {
+    "methodology": {
+      "warmup_seconds": 30,
+      "measurement_seconds": 60,
+      "sampling_interval_ms": 500,
+      "memory_metric": "RESIDENT_MEMORY_MB",
+      "peak_definition": "max(group_memory_mb) during measurement window",
+      "runs": 1,
+      "description": "Standard benchmark methodology"
+    },
+    "environment": {
+      "os": "windows",
+      "os_version": "Windows",
+      "ram_mb": 16118,
+      "cpu_brand": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+      "cpu_count": 8,
+      "webview2_version": null,
+      "app_version": "0.1.0",
+      "build_type": "release"
+    },
+    "workload": {
+      "name": "lightweight",
+      "description": "5 static pages",
+      "tab_count": 5,
+      "urls": [
+        "https://example.com",
+        "https://example.org",
+        "https://example.net",
+        "https://example.edu",
+        "https://example.gov"
+      ],
+      "stabilization_ms": 5000
+    },
+    "control": {
+      "condition": "control",
+      "workload": "lightweight",
+      "peak_memory_mb": 653.3828125,
+      "samples": [
+        646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875,
+        646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875,
+        646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875, 646.32421875,
+        646.32421875, 646.32421875, 646.328125, 646.32421875, 646.32421875, 646.30859375,
+        646.30859375, 646.37890625, 646.37890625, 646.32421875, 646.32421875, 646.37890625,
+        646.37890625, 646.36328125, 646.5390625, 653.3671875, 653.3828125, 653.3828125, 653.2734375,
+        653.23828125, 653.2265625, 653.26953125, 653.30078125, 653.30078125, 653.2734375,
+        653.2734375, 653.2734375, 653.2734375, 653.2734375, 653.2734375, 653.2734375, 653.2578125,
+        653.2578125, 653.25390625, 653.25390625, 653.25390625, 653.25390625, 653.25390625,
+        653.25390625, 653.25390625, 653.1875, 653.1875, 646.46484375, 646.46484375, 646.46484375,
+        646.46484375, 646.46484375, 646.46484375, 646.46484375, 646.46484375, 646.46484375,
+        646.46484375, 646.46484375, 646.46484375, 646.46484375, 646.44921875, 646.44921875,
+        646.4375, 646.4375, 646.42578125, 646.42578125, 646.4375, 646.4375, 646.4375, 646.4375,
+        646.4375, 646.4375, 646.4375, 646.4375, 646.4375, 646.4375, 646.4375, 646.4375, 646.40625,
+        646.44140625, 646.44140625, 646.44140625, 646.44140625, 646.44140625, 646.44140625,
+        646.44140625, 646.44140625, 646.44140625, 646.44140625, 646.44140625, 646.421875,
+        646.421875, 646.40234375, 646.37890625
+      ],
+      "mean_memory_mb": 648.1333966121496,
+      "median_memory_mb": 646.44140625,
+      "std_dev_mb": 2.9853629533333823,
+      "eviction_metrics": null,
+      "restore_metrics": null,
+      "pressure_regime": {
+        "level": "high",
+        "initial_available_ratio": 0.1411481508498067,
+        "avg_available_ratio": 0.14464877103898463,
+        "eviction_triggered": false,
+        "characterization": "High pressure: 14% memory available. Eviction likely."
+      },
+      "eviction_tracking": null
+    },
+    "treatment": {
+      "condition": "treatment",
+      "workload": "lightweight",
+      "peak_memory_mb": 646.59765625,
+      "samples": [
+        640.3984375, 640.3984375, 639.73828125, 639.73828125, 639.73828125, 639.73828125,
+        639.73828125, 639.73828125, 639.73828125, 639.73828125, 639.73828125, 639.73828125,
+        639.73828125, 639.73828125, 639.73828125, 639.73828125, 639.73828125, 639.73828125,
+        639.73828125, 639.73828125, 639.72265625, 639.83984375, 639.875, 639.87109375, 639.859375,
+        646.5859375, 646.59765625, 646.49609375, 646.49609375, 646.5234375, 646.51953125,
+        646.47265625, 646.47265625, 646.47265625, 646.47265625, 646.50390625, 646.54296875,
+        646.5078125, 646.4921875, 646.4921875, 646.51171875, 646.51171875, 646.51171875,
+        646.51171875, 646.51171875, 646.51171875, 646.51171875, 646.51171875, 646.51171875,
+        646.4921875, 646.4921875, 646.43359375, 646.421875, 646.421875, 646.4375, 646.4375,
+        646.4375, 646.4375, 646.4375, 646.4375, 646.4140625, 646.4140625, 646.40625, 646.40625,
+        646.40625, 646.40625, 646.41015625, 646.41015625, 646.41015625, 646.41015625, 646.41015625,
+        646.41015625, 646.41015625, 646.41015625, 646.41015625, 646.4140625, 646.41015625,
+        646.41015625, 646.41015625, 646.41015625, 646.4609375, 646.4609375, 646.41015625,
+        646.41015625, 646.41015625, 646.41015625, 646.41015625, 646.41015625, 646.41015625,
+        646.41015625, 646.41015625, 646.41015625, 646.37109375, 646.34375, 646.390625, 646.40234375,
+        646.40234375, 646.40234375, 646.40234375, 646.40234375, 646.40234375, 646.40234375,
+        646.40234375, 646.40234375, 646.40234375, 646.40234375, 646.40234375, 646.40234375,
+        646.40234375, 646.40234375
+      ],
+      "mean_memory_mb": 644.9341619318182,
+      "median_memory_mb": 646.41015625,
+      "std_dev_mb": 2.780544862231206,
+      "eviction_metrics": {
+        "attempts": 0,
+        "successes": 0,
+        "failures": 0,
+        "success_rate": 0.0,
+        "latencies_ms": [],
+        "mean_latency_ms": null,
+        "median_latency_ms": null
+      },
+      "restore_metrics": {
+        "attempts": 0,
+        "successes": 0,
+        "failures": 0,
+        "success_rate": 0.0,
+        "latencies_ms": [],
+        "mean_latency_ms": null,
+        "median_latency_ms": null
+      },
+      "pressure_regime": {
+        "level": "high",
+        "initial_available_ratio": 0.16134779659505397,
+        "avg_available_ratio": 0.1597959630274168,
+        "eviction_triggered": false,
+        "characterization": "High pressure: 16% memory available. Eviction likely."
+      },
+      "eviction_tracking": {
+        "attempts": 0,
+        "effective": 0,
+        "ineffective": 0,
+        "events": []
+      }
+    },
+    "peak_difference_mb": 6.78515625,
+    "peak_relative_difference_percent": 1.0384656774239833,
+    "eviction_attempts": 0,
+    "eviction_caused_observed_difference": false,
+    "causation_evidence": {
+      "attempts": 0,
+      "effective": 0,
+      "ineffective": 0,
+      "process_group_changed": false,
+      "renderer_processes_changed": false,
+      "assessment": "OBSERVED: No eviction occurred. Cannot attribute memory difference to eviction."
+    },
+    "run_deltas": [
+      5.92578125, 5.92578125, 6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375,
+      6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.5859375,
+      6.5859375, 6.5859375, 6.5859375, 6.5859375, 6.60546875, 6.484375, 6.44921875, 6.4375,
+      6.44921875, -0.20703125, -0.21875, -0.171875, -0.171875, -0.14453125, -0.140625, -0.109375,
+      0.06640625, 6.89453125, 6.91015625, 6.87890625, 6.73046875, 6.73046875, 6.734375, 6.77734375,
+      6.7890625, 6.7890625, 6.76171875, 6.76171875, 6.76171875, 6.76171875, 6.76171875, 6.76171875,
+      6.76171875, 6.765625, 6.765625, 6.8203125, 6.83203125, 6.83203125, 6.81640625, 6.81640625,
+      6.81640625, 6.81640625, 6.75, 6.75, 0.05078125, 0.05078125, 0.05859375, 0.05859375,
+      0.05859375, 0.05859375, 0.0546875, 0.0546875, 0.0546875, 0.0546875, 0.0546875, 0.0546875,
+      0.0546875, 0.0390625, 0.0390625, 0.0234375, 0.02734375, 0.015625, 0.015625, 0.02734375,
+      -0.0234375, -0.0234375, 0.02734375, 0.02734375, 0.02734375, 0.02734375, 0.02734375,
+      0.02734375, 0.02734375, 0.02734375, 0.02734375, -0.00390625, 0.0703125, 0.09765625,
+      0.05078125, 0.0390625, 0.0390625, 0.0390625, 0.0390625, 0.0390625, 0.0390625, 0.0390625,
+      0.0390625, 0.01953125, 0.01953125, 0.0, -0.0234375
+    ],
+    "mean_delta_mb": 3.240398656542056,
+    "std_dev_delta_mb": 3.3252924995628548
+  },
+  "correctness": {
+    "invariants": {
+      "evict_metadata_preserved": true,
+      "evict_url_preserved": true,
+      "evict_webview_destroyed": false,
+      "restore_metadata_preserved": true,
+      "restore_url_matches": true,
+      "restore_webview_created": true,
+      "scroll_position_preserved": false,
+      "form_state_preserved": false
+    },
+    "all_invariants_held": false,
+    "memory_effect": {
+      "status": "inconclusive",
+      "description": "No significant memory change",
+      "evidence": "Delta: 0.0 MB - eviction may not have triggered reclamation"
+    },
+    "eviction_execution": {
+      "status": "inconclusive",
+      "description": "No process destruction observed",
+      "evidence": "Eviction may not have terminated any processes, or processes were shared"
+    },
+    "resource_reclamation": {
+      "status": "fail",
+      "description": "No effective resource reclamation",
+      "evidence": "Neither renderer termination nor significant memory reduction observed"
+    },
+    "restore_correctness": {
+      "status": "inconclusive",
+      "description": "Restore correctness not measured in this run",
+      "evidence": "Would require triggering restore and verifying WebView recreation"
+    },
+    "race_safety": {
+      "status": "pass",
+      "description": "Race safety assumed from generation counter",
+      "evidence": "Implementation uses generation counter for race condition protection"
+    },
+    "evict_webview_destroyed": false,
+    "restore_webview_created": true,
+    "metadata_preserved": true,
+    "url_preserved": true,
+    "scroll_not_preserved": true,
+    "form_not_preserved": true,
+    "summary": "Eviction execution: INCONCLUSIVE. Resource reclamation: FAIL. Process delta: 0 removed. Memory delta: 0.0 MB. Note: Restore and race safety not actively tested."
+  },
+  "hysteresis": {
+    "pressure_events": 20,
+    "actions_performed": 4,
+    "blocked_by_cooldown": 11,
+    "blocked_by_sustained": 5,
+    "expected_actions": 20,
+    "cooldown_effectiveness": 0.55
+  },
+  "race_condition": {
+    "sequences_executed": 100,
+    "correct_final_states": 100,
+    "stale_mutations": 0,
+    "generation_mismatches": 0,
+    "success_rate": 1.0
+  },
+  "raw_snapshots": [],
+  "is_valid": true,
+  "validation_notes": []
+}

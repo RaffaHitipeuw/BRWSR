@@ -1,0 +1,218 @@
+{
+  "tab_counts": [5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25],
+  "pressure_readings": [
+    {
+      "tab_count": 5,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.33203125,
+      "mean_memory_mb": 646.2396484375,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2419.3671875,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.15009612474187606
+    },
+    {
+      "tab_count": 7,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.20703125,
+      "mean_memory_mb": 646.205078125,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2458.37109375,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.15251590426445852
+    },
+    {
+      "tab_count": 9,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.2421875,
+      "mean_memory_mb": 646.2084703947369,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2521.5390625,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.15643480808615917
+    },
+    {
+      "tab_count": 11,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.23828125,
+      "mean_memory_mb": 646.189453125,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2616.46875,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.16232419035534287
+    },
+    {
+      "tab_count": 13,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.35546875,
+      "mean_memory_mb": 642.2526726973684,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2423.31640625,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.15034113196243998
+    },
+    {
+      "tab_count": 15,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.21875,
+      "mean_memory_mb": 646.1888671875,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2332.5546875,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.1447103280358297
+    },
+    {
+      "tab_count": 17,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.39453125,
+      "mean_memory_mb": 646.3844572368421,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2353.69921875,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.14602212238292422
+    },
+    {
+      "tab_count": 19,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.38671875,
+      "mean_memory_mb": 646.383203125,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2587.60546875,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.1605335292744854
+    },
+    {
+      "tab_count": 21,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.39453125,
+      "mean_memory_mb": 646.364103618421,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2521.91015625,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.1564578305252824
+    },
+    {
+      "tab_count": 23,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.36328125,
+      "mean_memory_mb": 646.259375,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2625.78125,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.16290193240660342
+    },
+    {
+      "tab_count": 25,
+      "measurement_seconds": 15,
+      "peak_memory_mb": 646.28515625,
+      "mean_memory_mb": 646.2243009868421,
+      "pressure_level": "HIGH",
+      "available_memory_mb": 2575.50390625,
+      "total_memory_mb": 16118.78515625,
+      "pressure_ratio": 0.15978275541760403
+    }
+  ],
+  "eviction_events": [
+    {
+      "tab_count": 5,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.33203125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 7,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.20703125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 9,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.2421875,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 11,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.23828125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 13,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.35546875,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 15,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.21875,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 17,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.39453125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 19,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.38671875,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 21,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.39453125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 23,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.36328125,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    },
+    {
+      "tab_count": 25,
+      "pressure_level": "HIGH",
+      "memory_mb": 646.28515625,
+      "eviction_requested": true,
+      "eviction_completed": false,
+      "action_succeeded": false,
+      "state_transition_effective": false
+    }
+  ],
+  "critical_threshold_found": null,
+  "summary": "CRITICAL not reached within 25 tabs. Highest pressure: 16.0%"
+}

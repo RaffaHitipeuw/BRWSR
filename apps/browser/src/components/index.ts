@@ -5,6 +5,7 @@ export type { SidebarItem } from "./Sidebar";
 export { ToastContainer, NotificationCenter, NotificationBell } from "./Notifications";
 export { AppLauncher, EDUOS_APPS } from "./AppLauncher";
 export type { App } from "./AppLauncher";
+export { Run1Panel } from "./Run1Panel";
 export { browser, browserCommands } from "./browserCommands";
 
 // Re-export stores for convenience

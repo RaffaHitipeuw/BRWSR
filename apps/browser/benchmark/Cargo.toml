@@ -1,0 +1,23 @@
+[package]
+name = "eduos-benchmark"
+version = "0.1.0"
+edition = "2021"
+description = "EduOS Browser Benchmark Suite - Research Infrastructure for Lifecycle Engine Validation"
+authors = ["EduOS Research Team"]
+license = "MIT"
+
+# This is NOT part of the production browser runtime
+# This is a research tool for empirical validation
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.31"
+
+[lib]
+name = "eduos_benchmark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eduos-benchmark"
+path = "src/main.rs"

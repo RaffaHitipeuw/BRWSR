@@ -1,5 +1,5 @@
-export { useTabStore, setOnLastTabClose } from "./tabs";
-export type { Tab, TabGroup } from "./tabs";
+export { useTabStore } from "./tabs";
+export type { Tab, TabGroup } from "./types";
 export { useNotificationStore, notify } from "./notifications";
 export type { Notification, NotificationType } from "./notifications";
 export { useSessionStore } from "./session";

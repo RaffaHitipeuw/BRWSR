@@ -19,5 +19,11 @@
     "noImplicitAny": false
   },
   "include": ["src"],
+  "exclude": [
+    "src/runExperiment1.ts",
+    "src/runSmokeTest.ts",
+    "src/run1Benchmark.ts",
+    "src/run1Console.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
