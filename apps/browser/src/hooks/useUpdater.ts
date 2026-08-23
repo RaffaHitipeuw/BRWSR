@@ -36,7 +36,6 @@ export function useUpdater() {
     setState((prev) => ({ ...prev, checking: true, error: null }));
 
     try {
-      // First try the Rust backend
       const info = await invoke<UpdateInfo>("check_for_updates");
 
       setState((prev) => ({
@@ -59,7 +58,6 @@ export function useUpdater() {
         });
       }
     } catch (e) {
-      // Fallback to JS API
       try {
         const update = await check();
 
@@ -156,7 +154,6 @@ export function useUpdater() {
 
     try {
       await invoke("install_update");
-      // If this succeeds, the app will restart
     } catch (error) {
       setState((prev) => ({
         ...prev,
@@ -180,12 +177,10 @@ export function useUpdater() {
   };
 }
 
-// Get current app version
 export async function getAppVersion(): Promise<string> {
   try {
     return await invoke<string>("get_app_version");
   } catch {
-    // Fallback for development
     return "0.2.0";
   }
 }

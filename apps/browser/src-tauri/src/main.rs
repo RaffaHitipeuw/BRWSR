@@ -1,28 +1,65 @@
-// EduOS Browser - Backend with Research Features
-//
-// Architecture: Single WebView with Virtual Tab Navigation
-//
-// Research Focus: Observable behavior tracking for knowledge work analysis
-//
-// STORAGE LAYER (Raw Observations Only):
-// - Navigation events: timestamp, url, domain, action, tab_id, duration
-// - Memory snapshots: RSS, working_set, commit, virtual_size (Windows metrics)
-// - Window focus events: timestamp, focused_app, duration
-//
-// ANALYSIS LAYER (Inference - NOT stored):
-// - "Context" labels are derived, not stored
-// - Domain sequences are patterns, not entities
-// - Research questions are hypotheses to test, not conclusions
-//
-// Research Questions (Proposed):
-// RQ1: How do users organize information during prolonged knowledge work?
-// RQ2: Can URL sequence patterns reveal latent cognitive units?
-// RQ3: Does memory pressure affect navigation behavior?
-//
-// IMPORTANT: This is exploratory research infrastructure.
-// We collect data to TEST hypotheses, not to prove conclusions.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+/// Disable Windows 11 DWM rounded corners on the main Tauri window only.
+/// Uses DwmSetWindowAttribute with DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND.
+/// Does NOT modify WebView2 child HWNDs.
+#[cfg(target_os = "windows")]
+fn disable_main_window_rounded_corners(window: &tauri::WebviewWindow) {
+    use std::ffi::c_int;
+
+    
+    const DWMWA_WINDOW_CORNER_PREFERENCE: c_int = 33;
+    
+    const DWMWCP_DONOTROUND: c_int = 1;
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: *mut std::ffi::c_void,
+                                 dwAttribute: c_int,
+                                 pvAttribute: *const c_int,
+                                 cbAttribute: c_int) -> c_int;
+    }
+
+    let hwnd = window.hwnd().expect("Failed to get HWND");
+    let hwnd_raw = hwnd.0 as *mut std::ffi::c_void;
+    let pref = DWMWCP_DONOTROUND;
+
+    unsafe {
+        let result = DwmSetWindowAttribute(hwnd_raw, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, std::mem::size_of::<c_int>() as c_int);
+        if result == 0 {
+            log::info!("DWM rounded corners disabled on main window");
+        } else {
+            log::warn!("DwmSetWindowAttribute failed with code: {}", result);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -32,18 +69,19 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+mod startup_profiler;
+use startup_profiler::{StartupEvent, StartupProfiler, StartupTrace};
+
+
 
 const UI_HEIGHT: f64 = 88.0;
 const HOMEPAGE: &str = "https://www.google.com";
-const EDGE_INSET_LEFT: f64 = 8.0;
-const EDGE_INSET_RIGHT: f64 = -7.0;
 
-// Research constants - these are HYPOTHESES to test, not facts
-const TEMPORAL_GAP_THRESHOLD_MS: u64 = 300_000; // 5 min gap = potential boundary marker
-const MIN_SEQUENCE_SIZE: usize = 2; // Minimum events to form a sequence
 
-// ─── Geometry ────────────────────────────────────────────────────────────────
+const TEMPORAL_GAP_THRESHOLD_MS: u64 = 300_000; 
+const MIN_SEQUENCE_SIZE: usize = 2; 
+
+
 
 struct BrowserGeometry {
     x: i32,
@@ -58,14 +96,11 @@ fn compute_browser_geometry(
     scale: f64,
 ) -> BrowserGeometry {
     let ui_height_px = (UI_HEIGHT * scale).round() as i32;
-    let left_inset_px = (EDGE_INSET_LEFT * scale).round() as i32;
-    let right_inset_px = (EDGE_INSET_RIGHT * scale).round() as i32;
-
     BrowserGeometry {
-        x: main_pos.x - left_inset_px,
+        x: main_pos.x,
         y: main_pos.y + ui_height_px,
-        width: (main_size.width as i32 + left_inset_px + right_inset_px).max(0) as u32,
-        height: (main_size.height as i32 - ui_height_px).max(0) as u32,
+        width: main_size.width - 18,
+        height: ((main_size.height as i32) - ui_height_px).max(1) as u32,
     }
 }
 
@@ -77,8 +112,8 @@ fn sync_browser_layout(app: &tauri::AppHandle) {
         return;
     };
 
-    let Ok(pos) = main.inner_position() else { return };
-    let Ok(size) = main.inner_size() else { return };
+    let Ok(pos) = main.outer_position() else { return };
+    let Ok(size) = main.outer_size() else { return };
     let scale = main.scale_factor().unwrap_or(1.0);
 
     let geo = compute_browser_geometry(pos, size, scale);
@@ -86,50 +121,50 @@ fn sync_browser_layout(app: &tauri::AppHandle) {
     let _ = browser.set_size(PhysicalSize::new(geo.width, geo.height));
 }
 
-// ─── Types ──────────────────────────────────────────────────────────────────
 
-// REAL memory snapshot using sysinfo
-// IMPORTANT: On Windows/Tauri, WebView2 runs in the SAME PROCESS as Rust core
-// So combined_rss_mb = Rust core + WebView2 (not separate processes)
+
+
+
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct MemorySnapshot {
     pub timestamp: u64,
-    // Combined RSS (Rust core + WebView2 - same process on Windows)
+    
     pub combined_rss_mb: f64,
     pub combined_virt_mb: f64,
-    // System memory
+    
     pub total_ram_mb: f64,
     pub available_ram_mb: f64,
-    // Memory pressure classification
-    pub pressure_level: String,      // "low" | "medium" | "high" | "critical"
-    pub pressure_ratio: f64,         // available / total (0.0 - 1.0)
+    
+    pub pressure_level: String,      
+    pub pressure_ratio: f64,         
 }
 
-// Raw navigation event - this is what we STORE
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct NavigationEvent {
-    pub timestamp: u64,              // Unix timestamp in milliseconds
-    pub url: String,                 // Full URL
-    pub domain: Option<String>,       // Extracted domain (null for invalid URLs)
-    pub action: String,              // "navigate" | "reload" | "back" | "forward"
-    pub tab_id: String,              // Tab identifier
-    pub duration_ms: Option<u64>,    // Time on page (null if still on page)
-    pub memory_rss_mb: Option<f64>,  // Process RSS at time of navigation
-    pub memory_pressure: Option<String>, // System pressure at navigation time
+    pub timestamp: u64,              
+    pub url: String,                 
+    pub domain: Option<String>,       
+    pub action: String,              
+    pub tab_id: String,              
+    pub duration_ms: Option<u64>,    
+    pub memory_rss_mb: Option<f64>,  
+    pub memory_pressure: Option<String>, 
 }
 
-// URL compression: Domain table for memory efficiency
+
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct DomainTable {
-    pub domains: Vec<String>,        // domain_id -> domain string
-    pub url_entries: Vec<UrlEntry>,  // Compressed URL storage
+    pub domains: Vec<String>,        
+    pub url_entries: Vec<UrlEntry>,  
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct UrlEntry {
-    pub domain_id: u32,              // Index into domain table
-    pub path_hash: u64,             // Hash of path for deduplication
-    pub path_ref: Option<u32>,       // Reference to parent path (for /user/repo pattern)
+    pub domain_id: u32,              
+    pub path_hash: u64,             
+    pub path_ref: Option<u32>,       
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -141,7 +176,7 @@ pub struct TabSnapshot {
     pub last_accessed: u64,
 }
 
-// ─── Lifecycle Event Types (P0: Causal Observability) ──────────────────────────
+
 
 /// Event types for lifecycle actions
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -217,19 +252,18 @@ fn current_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Capture current process state for comparison
+/// Capture current process state for comparison (single-pass)
 fn capture_process_state(sys: &System) -> ProcessStateSnapshot {
     let timestamp_ms = current_timestamp_ms();
 
-    // Collect WebView2-related processes
-    // Note: On Windows, WebView2 runs in its own process group
-    // We filter for common WebView2 process names
+    
     let mut processes = Vec::new();
+    let mut group_memory_mb = 0.0;
 
     for (pid, process) in sys.processes() {
         let name = process.name().to_string_lossy().to_lowercase();
 
-        // WebView2 related process patterns
+        
         let is_webview2 = name.contains("msedgewebview2")
             || name.contains("msedge")
             || name.contains("chrome")
@@ -237,28 +271,14 @@ fn capture_process_state(sys: &System) -> ProcessStateSnapshot {
             || name.contains("renderer");
 
         if is_webview2 || name.contains("eduos") {
-            let start_time = process.start_time(); // Unix timestamp in seconds
-
+            let start_time = process.start_time();
+            let mem_mb = process.memory() as f64 / (1024.0 * 1024.0);
+            group_memory_mb += mem_mb;
             processes.push(ProcessIdentity {
                 pid: pid.as_u32(),
                 start_time,
-                name: name,
+                name,
             });
-        }
-    }
-
-    // Calculate total memory of WebView2 process group
-    let mut group_memory_mb = 0.0;
-    for (_pid, process) in sys.processes() {
-        let name = process.name().to_string_lossy().to_lowercase();
-        let is_webview2 = name.contains("msedgewebview2")
-            || name.contains("msedge")
-            || name.contains("chrome")
-            || name.contains("browser")
-            || name.contains("renderer");
-
-        if is_webview2 || name.contains("eduos") {
-            group_memory_mb += process.memory() as f64 / (1024.0 * 1024.0);
         }
     }
 
@@ -274,28 +294,28 @@ fn capture_process_state(sys: &System) -> ProcessStateSnapshot {
 fn emit_lifecycle_event(app: &tauri::AppHandle, event: LifecycleEvent) {
     let event_type = event.event_type.clone();
 
-    // 1. Emit via Tauri event system (async, for frontend)
+    
     let label = format!("lifecycle:{:?}", event_type);
     if let Err(e) = app.emit(&label, event.clone()) {
         log::warn!("Failed to emit lifecycle event: {}", e);
     }
 
-    // 2. Store in event store (synchronous, for benchmark query)
+    
     let event_store = app.state::<LifecycleEventStore>();
     event_store.record_event(event);
 }
 
-// ─── Research Analysis Types (NOT stored - derived) ──────────────────────────
 
-// Analysis output - NOT stored in backend
+
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SequenceAnalysis {
     pub total_navigations: usize,
     pub unique_domains: usize,
-    pub domain_sequence: Vec<String>,         // Raw sequence for analysis
-    pub temporal_gaps_ms: Vec<u64>,          // Gaps between navigations
-    pub gap_markers: Vec<GapMarker>,         // Potential boundary markers
-    pub proposed_labels: Vec<SequenceLabel>, // Hypothetical labels (NOT facts)
+    pub domain_sequence: Vec<String>,         
+    pub temporal_gaps_ms: Vec<u64>,          
+    pub gap_markers: Vec<GapMarker>,         
+    pub proposed_labels: Vec<SequenceLabel>, 
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -304,20 +324,20 @@ pub struct GapMarker {
     pub after_idx: usize,
     pub gap_ms: u64,
     pub exceeds_threshold: bool,
-    pub proposed_reason: Option<String>, // "temporal_gap" - NOT confirmed
+    pub proposed_reason: Option<String>, 
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SequenceLabel {
     pub sequence_start: usize,
     pub sequence_end: usize,
-    pub label: String,              // e.g., "Programming" - derived, not fact
-    pub confidence: f64,            // How confident is the label?
-    pub method: String,             // "domain_clustering" | "timeout_boundary" | etc
-    pub evidence: Vec<String>,      // URLs supporting this label
+    pub label: String,              
+    pub confidence: f64,            
+    pub method: String,             
+    pub evidence: Vec<String>,      
 }
 
-// ─── Research Session ────────────────────────────────────────────────────────
+
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ResearchSession {
@@ -326,19 +346,21 @@ pub struct ResearchSession {
     pub ended_at: Option<u64>,
     pub total_navigations: usize,
     pub gap_markers_count: usize,
-    pub analysis_count: usize,  // Number of times analysis was run
+    pub analysis_count: usize,  
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ResearchExport {
     pub session: ResearchSession,
-    pub navigation_events: Vec<NavigationEvent>,  // Raw observations
-    pub memory_snapshots: Vec<MemorySnapshot>,   // Raw observations
-    pub literature_notes: Vec<String>,           // Theoretical grounding
-    pub research_questions: Vec<String>,          // Hypotheses being tested
+    pub navigation_events: Vec<NavigationEvent>,  
+    pub memory_snapshots: Vec<MemorySnapshot>,   
+    pub literature_notes: Vec<String>,           
+    pub research_questions: Vec<String>,          
 }
 
-// ─── State Managers ──────────────────────────────────────────────────────────
+
+
+const MAX_MEMORY_SNAPSHOTS: usize = 1000;
 
 struct MemoryTracker {
     snapshots: Vec<MemorySnapshot>,
@@ -356,8 +378,12 @@ impl Default for MemoryTracker {
 
 struct TabManager {
     tabs: Mutex<HashMap<String, TabData>>,
+    /// Bounded history: max MAX_HISTORY_ENTRIES URLs, FIFO eviction
     history: Mutex<Vec<String>>,
 }
+
+/// Maximum URLs to retain in browser history (FIFO eviction)
+const MAX_HISTORY_ENTRIES: usize = 500;
 
 #[derive(Clone)]
 struct TabData {
@@ -376,23 +402,23 @@ impl Default for TabManager {
     }
 }
 
-// ─── WebView Lifecycle Manager ───────────────────────────────────────────────
-//
-// Implements lazy WebView creation and destroy-on-idle
-//
-// States:
-//   Uninitialized → Created → Active ↔ Idle → Destroyed
-//                      ↑         ↓         ↓
-//                      └─── resume ───────┘
+
+
+
+
+
+
+
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WebViewState {
-    Uninitialized,  // WebView not created yet
-    Creating,        // Currently creating
-    Active,          // User actively browsing
-    Idle,            // Not active, can be destroyed
-    Destroyed,       // WebView released
-    Restoring,       // Recreating after destroy
+    Uninitialized,  
+    Creating,        
+    Active,          
+    Idle,            
+    Destroyed,       
+    Restoring,       
 }
 
 impl Default for WebViewState {
@@ -404,9 +430,9 @@ impl Default for WebViewState {
 struct WebViewLifecycle {
     state: Mutex<WebViewState>,
     last_activity: Mutex<Instant>,
-    idle_threshold_secs: Mutex<u64>,  // Destroy after this idle time
-    last_url: Mutex<Option<String>>, // URL to restore
-    last_tab_id: Mutex<Option<String>>, // Last active tab
+    idle_threshold_secs: Mutex<u64>,  
+    last_url: Mutex<Option<String>>, 
+    last_tab_id: Mutex<Option<String>>, 
 }
 
 impl Default for WebViewLifecycle {
@@ -414,7 +440,7 @@ impl Default for WebViewLifecycle {
         Self {
             state: Mutex::new(WebViewState::Uninitialized),
             last_activity: Mutex::new(Instant::now()),
-            idle_threshold_secs: Mutex::new(300), // 5 minutes
+            idle_threshold_secs: Mutex::new(300), 
             last_url: Mutex::new(None),
             last_tab_id: Mutex::new(None),
         }
@@ -463,18 +489,22 @@ impl WebViewLifecycle {
     }
 }
 
-// ─── Sequence Tracker (Research - Raw Events Only) ───────────────────────────
-//
-// NOTE: This tracks raw navigation events. All "context" inference happens
-// in the analysis layer, not here. We store:
-// - Raw navigation events with timestamps
-// - Gap markers (potential boundary locations)
-// - Domain sequences for analysis
-//
-// We do NOT store:
-// - "Context" labels (derived, not observed)
-// - Confidence scores (interpretation, not fact)
-// - Intent or purpose (latent variables)
+
+
+
+
+
+
+
+
+
+
+
+
+
+const MAX_NAVIGATION_EVENTS: usize = 1000;
+const MAX_DOMAIN_SEQUENCE: usize = 1000;
+const MAX_GAP_MARKERS: usize = 100;
 
 struct SequenceTracker {
     events: Vec<NavigationEvent>,
@@ -500,28 +530,38 @@ impl SequenceTracker {
     }
 
     fn add_event(&mut self, event: NavigationEvent) {
-        // Track domain sequence
+        
         if let Some(ref domain) = event.domain {
+            if self.domain_sequence.len() >= MAX_DOMAIN_SEQUENCE {
+                self.domain_sequence.remove(0);
+            }
             self.domain_sequence.push(domain.clone());
         }
 
-        // Detect gap markers
+        
         if let Some(last_time) = self.last_navigation_time {
             let gap_ms = last_time.elapsed().as_millis() as u64;
             if gap_ms >= TEMPORAL_GAP_THRESHOLD_MS && self.events.len() >= MIN_SEQUENCE_SIZE {
-                // Potential boundary marker - but this is just a marker, NOT a confirmed boundary
+                if self.gap_markers.len() >= MAX_GAP_MARKERS {
+                    self.gap_markers.remove(0);
+                }
                 let marker = GapMarker {
                     before_idx: self.events.len() - 1,
                     after_idx: self.events.len(),
                     gap_ms,
                     exceeds_threshold: true,
-                    proposed_reason: Some("temporal_gap".to_string()), // PROPOSED, not confirmed
+                    proposed_reason: Some("temporal_gap".to_string()),
                 };
                 self.gap_markers.push(marker);
             }
         }
 
         self.last_navigation_time = Some(Instant::now());
+
+        
+        if self.events.len() >= MAX_NAVIGATION_EVENTS {
+            self.events.remove(0);
+        }
         self.events.push(event);
     }
 
@@ -532,7 +572,7 @@ impl SequenceTracker {
             .collect::<std::collections::HashSet<_>>()
             .len();
 
-        // Calculate temporal gaps
+        
         let mut temporal_gaps_ms = Vec::new();
         for i in 1..self.events.len() {
             let prev_ts = self.events[i-1].timestamp;
@@ -548,12 +588,12 @@ impl SequenceTracker {
             domain_sequence: self.domain_sequence.clone(),
             temporal_gaps_ms,
             gap_markers: self.gap_markers.clone(),
-            proposed_labels: Vec::new(), // Labels are derived in analysis layer
+            proposed_labels: Vec::new(), 
         }
     }
 }
 
-// ─── Lifecycle Event Store (P0: Causal Observability) ──────────────────────────
+
 
 /// Benchmark metadata for run comparison and reproducibility
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -561,9 +601,9 @@ pub struct BenchmarkMetadata {
     pub run_id: String,
     pub workload_id: String,
     pub run_index: u32,
-    pub condition: String,  // "control" or "treatment"
+    pub condition: String,  
 
-    // Environment
+    
     pub os: String,
     pub os_version: String,
     pub cpu_brand: String,
@@ -571,15 +611,15 @@ pub struct BenchmarkMetadata {
     pub ram_mb: u64,
     pub webview2_version: Option<String>,
 
-    // Build info
+    
     pub app_version: String,
     pub build_type: String,
 
-    // Lifecycle configuration
+    
     pub idle_threshold_secs: u64,
     pub memory_pressure_thresholds: PressureThresholds,
 
-    // Timing
+    
     pub start_time_ms: u64,
     pub end_time_ms: Option<u64>,
     pub duration_ms: Option<u64>,
@@ -587,10 +627,10 @@ pub struct BenchmarkMetadata {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct PressureThresholds {
-    pub low: f64,      // > 50% available
-    pub medium: f64,   // > 20% available
-    pub high: f64,     // > 10% available
-    pub critical: f64,  // <= 10% available
+    pub low: f64,      
+    pub medium: f64,   
+    pub high: f64,     
+    pub critical: f64,  
 }
 
 impl Default for PressureThresholds {
@@ -611,11 +651,14 @@ pub struct BenchmarkComparison {
     pub events: Vec<LifecycleEvent>,
     pub stats: LifecycleEventStats,
 
-    // Memory measurements
+    
     pub peak_memory_mb: f64,
     pub mean_memory_mb: Option<f64>,
     pub samples: Vec<f64>,
 }
+
+const MAX_LIFECYCLE_EVENTS: usize = 1000;
+const MAX_COMPARISONS: usize = 100;
 
 /// Stores lifecycle events and benchmark metadata for analysis
 struct LifecycleEventStore {
@@ -631,7 +674,7 @@ struct LifecycleEventStore {
     run_index: Mutex<u32>,
     /// All recorded lifecycle events
     events: Mutex<Vec<LifecycleEvent>>,
-    /// Benchmark comparisons for this run
+    /// Benchmark comparisons for this run (bounded: MAX_COMPARISONS)
     comparisons: Mutex<Vec<BenchmarkComparison>>,
 }
 
@@ -661,15 +704,19 @@ impl LifecycleEventStore {
         *self.workload_id.lock().unwrap() = Some(workload_id);
         *self.condition.lock().unwrap() = Some(condition);
 
-        // Clear previous events for new run
+        
         self.events.lock().unwrap().clear();
 
         log::info!("Benchmark run started with full metadata");
     }
 
-    /// Record a benchmark comparison result
+    /// Record a benchmark comparison result (bounded: MAX_COMPARISONS, FIFO eviction)
     fn record_comparison(&self, comparison: BenchmarkComparison) {
-        self.comparisons.lock().unwrap().push(comparison);
+        let mut comparisons = self.comparisons.lock().unwrap();
+        if comparisons.len() >= MAX_COMPARISONS {
+            comparisons.remove(0); 
+        }
+        comparisons.push(comparison);
     }
 
     /// Get current benchmark metadata
@@ -708,16 +755,20 @@ impl LifecycleEventStore {
             (r.clone(), w.clone(), c.clone())
         };
 
-        // Add correlation metadata to event
+        
         let mut event_with_meta = event;
         event_with_meta.benchmark_run_id = run_id;
         event_with_meta.workload_id = workload_id;
         event_with_meta.condition = condition.clone();
         event_with_meta.condition = condition;
 
+        
+        if events.len() >= MAX_LIFECYCLE_EVENTS {
+            events.remove(0);
+        }
         events.push(event_with_meta);
 
-        // Log for debugging
+        
         log::debug!("Recorded lifecycle event: {:?}", event_type);
     }
 
@@ -815,7 +866,7 @@ pub struct LifecycleEvent {
     /// Benchmark correlation
     pub benchmark_run_id: Option<String>,
     pub workload_id: Option<String>,
-    pub condition: Option<String>,  // "control" or "treatment"
+    pub condition: Option<String>,  
 
     /// Event classification
     pub event_type: LifecycleEventType,
@@ -869,7 +920,7 @@ impl LifecycleEvent {
     ) -> Self {
         let memory_delta_mb = process_after.group_memory_mb - process_before.group_memory_mb;
 
-        // Processes that disappeared
+        
         let processes_removed: Vec<ProcessIdentity> = process_before
             .processes
             .iter()
@@ -877,7 +928,7 @@ impl LifecycleEvent {
             .cloned()
             .collect();
 
-        // Processes that appeared
+        
         let processes_added: Vec<ProcessIdentity> = process_after
             .processes
             .iter()
@@ -885,9 +936,9 @@ impl LifecycleEvent {
             .cloned()
             .collect();
 
-        // Assess effectiveness separately
+        
         let state_transition_effective = previous_state != new_state;
-        let memory_reclaimed = memory_delta_mb < -5.0; // >5MB decrease
+        let memory_reclaimed = memory_delta_mb < -5.0; 
         let process_group_changed = !processes_removed.is_empty() || !processes_added.is_empty();
 
         let summary = format!(
@@ -938,7 +989,7 @@ fn uuid_simple() -> String {
     format!("{:x}{:x}", now.as_secs(), now.subsec_nanos())
 }
 
-// ─── Session Manager ────────────────────────────────────────────────────────
+
 
 struct SessionManager {
     current_session: Option<ResearchSession>,
@@ -951,16 +1002,16 @@ impl Default for SessionManager {
         Self {
             current_session: None,
             literature_notes: vec![
-                // Theoretical Foundations
+                
                 "Activity Theory: Leontiev (1978) - Activity/Action/Operation hierarchy".to_string(),
                 "Situated Cognition: Brown, Collins, Duguid (1989) - Knowledge is context-dependent".to_string(),
                 "Distributed Cognition: Hutchins (1995) - Cognition spreads across tools".to_string(),
                 "Cognitive Load Theory: Sweller (1988) - Working memory limits".to_string(),
-                // Key Distinctions
+                
                 "NOTE: We observe URL sequences; Activity Theory focuses on goal-directed actions".to_string(),
                 "NOTE: 'Context' labels are derived (latent variable), not observed".to_string(),
                 "NOTE: Navigation events are observable; meaning is inferred".to_string(),
-                // Research Approach
+                
                 "We TEST hypotheses, we do not PROVE conclusions".to_string(),
                 "All labels are proposed, not confirmed".to_string(),
             ],
@@ -975,7 +1026,96 @@ impl Default for SessionManager {
     }
 }
 
-// ─── Commands: Window Control ─────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct CachedSystem {
+    /// The cached System instance
+    sys: Mutex<System>,
+    /// Track when we last did a full refresh
+    last_full_refresh: Mutex<Instant>,
+    /// Track when we last refreshed memory
+    last_memory_refresh: Mutex<Instant>,
+}
+
+impl CachedSystem {
+    fn new() -> Self {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let now = Instant::now();
+        Self {
+            sys: Mutex::new(sys),
+            last_full_refresh: Mutex::new(now),
+            last_memory_refresh: Mutex::new(now),
+        }
+    }
+
+    /// Refresh memory info only (lightweight, ~1ms)
+    fn refresh_memory(&self) {
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_memory_specifics(sysinfo::MemoryRefreshKind::everything());
+        *self.last_memory_refresh.lock().unwrap() = Instant::now();
+    }
+
+    /// Refresh specific processes by PID (targeted, ~10ms)
+    fn refresh_processes(&self, pids: &[Pid]) {
+        use sysinfo::ProcessesToUpdate;
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(pids),
+            sysinfo::ProcessRefreshKind::everything(),
+        );
+    }
+
+    /// Full system refresh (expensive, ~50-200ms)
+    fn refresh_all(&self) {
+        let mut sys = self.sys.lock().unwrap();
+        sys.refresh_all();
+        *self.last_full_refresh.lock().unwrap() = Instant::now();
+        *self.last_memory_refresh.lock().unwrap() = Instant::now();
+    }
+
+    /// Get memory for a specific process by PID
+    fn get_process_memory(&self, pid: Pid) -> Option<(u64, u64)> {
+        let sys = self.sys.lock().unwrap();
+        sys.process(pid).map(|p| (p.memory(), p.virtual_memory()))
+    }
+
+    /// Get system memory totals
+    fn get_system_memory(&self) -> (u64, u64) {
+        let sys = self.sys.lock().unwrap();
+        (sys.total_memory(), sys.available_memory())
+    }
+
+    /// Get memory for multiple PIDs
+    fn get_processes_memory(&self, pids: &[u32]) -> f64 {
+        let sys = self.sys.lock().unwrap();
+        pids.iter()
+            .filter_map(|&p| sys.process(Pid::from_u32(p)))
+            .map(|p| p.memory() as f64 / (1024.0 * 1024.0))
+            .sum()
+    }
+}
+
+impl Default for CachedSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
 
 #[tauri::command]
 fn minimize_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -1002,7 +1142,7 @@ fn toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn close_window(app: tauri::AppHandle) -> Result<(), String> {
-    // End research session
+    
     let session_mgr = app.state::<Mutex<SessionManager>>();
     if let Ok(mut session) = session_mgr.lock() {
         if let Some(ref mut s) = session.current_session {
@@ -1010,7 +1150,7 @@ fn close_window(app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    // Destroy WebView (release memory)
+    
     let lifecycle = app.state::<WebViewLifecycle>();
     lifecycle.set_destroyed();
 
@@ -1027,7 +1167,7 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-// ─── Commands: Navigation ─────────────────────────────────────────────────────
+
 
 #[tauri::command]
 async fn navigate_browser(
@@ -1038,36 +1178,50 @@ async fn navigate_browser(
     #[allow(non_snake_case)]
     navigationType: String,
 ) -> Result<(), String> {
-    // Check if WebView exists, if not create it (lazy creation)
+    
     let lifecycle = app.state::<WebViewLifecycle>();
     let needs_creation = lifecycle.get_state() == WebViewState::Uninitialized
         || lifecycle.get_state() == WebViewState::Destroyed;
 
+    
+    let profiler = app.state::<Mutex<StartupProfiler>>();
+
     if needs_creation {
-        // Create WebView first
+
+        let mut p = profiler.lock().unwrap();
+        p.phase_start("webview_checking_geometry");
+
+
         let handle = app.app_handle().clone();
         let main_window = app.get_webview_window("main")
             .ok_or("Main window not found")?;
 
-        let main_pos = main_window.inner_position().unwrap_or_default();
-        let main_size = main_window.inner_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
-        let scale = main_window.scale_factor().unwrap_or(1.0);
-        let geo = compute_browser_geometry(main_pos, main_size, scale);
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let logical_x = geo.x as f64 / scale;
-        let logical_y = geo.y as f64 / scale;
-        let logical_width = geo.width as f64 / scale;
-        let logical_height = geo.height as f64 / scale;
+
+        let main_pos = main_window.outer_position().unwrap_or_default();
+        let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
+
+
+        let geo = compute_browser_geometry(main_pos, main_size, 1.0);
+        
+        let pos_x = geo.x as f64;
+        let pos_y = geo.y as f64;
+        let size_w = geo.width as f64;
+        let size_h = geo.height as f64;
+
+        p.phase_end("webview_checking_geometry", Some("geometry computed"));
 
         let webview_url: WebviewUrl = match url::Url::parse(&url) {
             Ok(u) => WebviewUrl::External(u),
             Err(_) => WebviewUrl::App("about:blank".into()),
         };
 
+        p.phase_start("webview_builder_create");
         match WebviewWindowBuilder::new(&handle, "browser", webview_url)
             .title("EduOS Browser")
-            .position(logical_x, logical_y)
-            .inner_size(logical_width, logical_height)
+            .position(pos_x, pos_y)
+            .inner_size(size_w, size_h)
             .decorations(false)
             .resizable(false)
             .skip_taskbar(true)
@@ -1075,37 +1229,52 @@ async fn navigate_browser(
             .focused(true)
             .parent(&main_window)
         {
-            Ok(builder) => match builder.build() {
-                Ok(_) => {
-                    lifecycle.mark_active();
-                    log::info!("WebView created on first navigation: {}", url);
+            Ok(builder) => {
+                p.phase_end("webview_builder_create", Some("builder created"));
+
+                p.phase_start("webview_build");
+                match builder.build() {
+                    Ok(browser_win) => {
+                        p.phase_end("webview_build", Some("WebView built successfully"));
+
+                        disable_main_window_rounded_corners(&browser_win);
+                        lifecycle.mark_active();
+
+                        sync_browser_layout(&handle);
+
+                        let trace = p.finish();
+                        log::info!("[WEBVIEW] WebView created in {}ms total", trace.total_ms);
+                        for (phase, dur) in &trace.phase_breakdown {
+                            log::info!("[WEBVIEW]   {}: {}ms", phase, dur);
+                        }
+                    }
+                    Err(e) => return Err(format!("Failed to create WebView: {}", e)),
                 }
-                Err(e) => return Err(format!("Failed to create WebView: {}", e)),
-            },
+            }
             Err(e) => return Err(format!("Failed to create WebView: {}", e)),
         }
     } else {
         lifecycle.mark_active();
     }
 
-    // Track navigation in lifecycle
+    
     lifecycle.record_navigation_sync(&url, &tabId);
 
-    // Now navigate
+    
     let window = app.get_webview_window("browser").ok_or("Browser not found")?;
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
 
-    // Extract domain
+    
     let domain = SequenceTracker::extract_domain(&url);
 
-    // Get current memory snapshot for this event
+    
     let mem_tracker = app.state::<Mutex<MemoryTracker>>();
     let (rss, pressure) = {
         let m = mem_tracker.lock().unwrap();
-        // Get latest snapshot
+        
         let last = m.snapshots.last();
         (
             last.map(|s| s.combined_rss_mb),
@@ -1113,26 +1282,26 @@ async fn navigate_browser(
         )
     };
 
-    // Create raw navigation event
+    
     let event = NavigationEvent {
         timestamp: now_ms,
         url: url.clone(),
         domain: domain.clone(),
         action: navigationType.clone(),
         tab_id: tabId.clone(),
-        duration_ms: None, // Will be set on next navigation
+        duration_ms: None, 
         memory_rss_mb: rss,
         memory_pressure: pressure,
     };
 
-    // Track in sequence tracker
+    
     let seq_tracker = app.state::<Mutex<SequenceTracker>>();
     {
         let mut st = seq_tracker.lock().unwrap();
         st.add_event(event);
     }
 
-    // Update session navigation count
+    
     let session_mgr = app.state::<Mutex<SessionManager>>();
     if let Ok(mut session) = session_mgr.lock() {
         if let Some(ref mut s) = session.current_session {
@@ -1140,7 +1309,7 @@ async fn navigate_browser(
         }
     }
 
-    // Update tab history
+    
     let tab_manager = app.state::<Mutex<TabManager>>();
     {
         let mut tm = tab_manager.lock().unwrap();
@@ -1152,10 +1321,27 @@ async fn navigate_browser(
             let new_len = (idx + 1).min(history.len());
             history.truncate(new_len);
         }
+
+        
+        if history.len() >= MAX_HISTORY_ENTRIES {
+            
+            let remove_count = (history.len() - MAX_HISTORY_ENTRIES) + 1;
+            history.drain(0..remove_count);
+
+            
+            for tab in tabs.values_mut() {
+                if tab.history_index >= remove_count {
+                    tab.history_index -= remove_count;
+                } else {
+                    tab.history_index = 0;
+                }
+            }
+        }
+
         history.push(url.clone());
     }
 
-    // Actually navigate
+    
     let encoded = serde_json::to_string(&url).map_err(|e| e.to_string())?;
     let script = format!("window.location.href = {}", encoded);
     window.eval(&script).map_err(|e| e.to_string())
@@ -1179,10 +1365,10 @@ async fn forward_browser(app: tauri::AppHandle) -> Result<(), String> {
     window.eval("window.history.forward()").map_err(|e| e.to_string())
 }
 
-// ─── Commands: WebView Lifecycle ─────────────────────────────────────────────
-//
-// Implements lazy creation and destroy-on-idle
-// Reduces memory when browser not in use
+
+
+
+
 
 #[tauri::command]
 fn get_webview_state(app: tauri::AppHandle) -> Result<WebViewStateInfo, String> {
@@ -1222,20 +1408,20 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
     let current_state = lifecycle.get_state();
 
     if current_state == WebViewState::Active || current_state == WebViewState::Idle {
-        // Already have WebView, just activate
+        
         lifecycle.mark_active();
-        return Ok(false); // Was already active
+        return Ok(false); 
     }
 
-    // Need to create/restore WebView
+    
     lifecycle.set_restoring();
 
-    // Get last URL or use homepage
+    
     let url_to_load = {
         let last_url = lifecycle.last_url.lock().unwrap();
         let last_tab = lifecycle.last_tab_id.lock().unwrap();
 
-        // Get current tab's URL
+        
         let tab_manager = app.state::<Mutex<TabManager>>();
         let tm = tab_manager.lock().unwrap();
         let tabs = tm.tabs.lock().unwrap();
@@ -1252,20 +1438,20 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         }.unwrap_or_else(|| HOMEPAGE.to_string())
     };
 
-    // Create WebView
+    
     let handle = app.app_handle().clone();
     let main_window = app.get_webview_window("main")
         .ok_or("Main window not found")?;
 
-    let main_pos = main_window.inner_position().unwrap_or_default();
-    let main_size = main_window.inner_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
-    let scale = main_window.scale_factor().unwrap_or(1.0);
-    let geo = compute_browser_geometry(main_pos, main_size, scale);
+    let main_pos = main_window.outer_position().unwrap_or_default();
+    let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
 
-    let logical_x = geo.x as f64 / scale;
-    let logical_y = geo.y as f64 / scale;
-    let logical_width = geo.width as f64 / scale;
-    let logical_height = geo.height as f64 / scale;
+
+    let geo = compute_browser_geometry(main_pos, main_size, 1.0);
+    let pos_x = geo.x as f64;
+    let pos_y = geo.y as f64;
+    let size_w = geo.width as f64;
+    let size_h = geo.height as f64;
 
     let webview_url: WebviewUrl = match url::Url::parse(&url_to_load) {
         Ok(u) => WebviewUrl::External(u),
@@ -1274,8 +1460,8 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
 
     match WebviewWindowBuilder::new(&handle, "browser", webview_url)
         .title("EduOS Browser")
-        .position(logical_x, logical_y)
-        .inner_size(logical_width, logical_height)
+        .position(pos_x, pos_y)
+        .inner_size(size_w, size_h)
         .decorations(false)
         .resizable(false)
         .skip_taskbar(true)
@@ -1284,10 +1470,12 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         .parent(&main_window)
     {
         Ok(builder) => match builder.build() {
-            Ok(_) => {
+            Ok(browser_win) => {
+                
+                disable_main_window_rounded_corners(&browser_win);
                 lifecycle.mark_active();
                 log::info!("WebView restored: {}", url_to_load);
-                Ok(true) // Newly created
+                Ok(true) 
             }
             Err(e) => {
                 log::error!("Failed to restore WebView: {}", e);
@@ -1310,7 +1498,7 @@ async fn destroy_webview(app: tauri::AppHandle) -> Result<Option<String>, String
         return Ok(None);
     }
 
-    // Get last URL before destroying
+    
     let last_url = {
         let tab_manager = app.state::<Mutex<TabManager>>();
         let tm = tab_manager.lock().unwrap();
@@ -1325,7 +1513,7 @@ async fn destroy_webview(app: tauri::AppHandle) -> Result<Option<String>, String
         tab.map(|t| history.get(t.history_index).cloned()).flatten()
     };
 
-    // Close browser window
+    
     if let Some(browser) = app.get_webview_window("browser") {
         let _ = browser.close();
     }
@@ -1360,12 +1548,12 @@ fn record_navigation(app: tauri::AppHandle, url: String, #[allow(non_snake_case)
     Ok(())
 }
 
-// ─── Commands: Tab Lifecycle Management (P0-3) ─────────────────────────────────
-//
-// These commands implement REAL resource lifecycle changes, not just state flags.
-// - suspend_tab: Reduces WebView memory while preserving page state
-// - evict_tab: Fully destroys WebView, releases all resources
-// - restore_tab: Restores tab from evicted state
+
+
+
+
+
+
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TabLifecycleInfo {
@@ -1378,17 +1566,17 @@ pub struct TabLifecycleInfo {
 
 #[tauri::command]
 fn suspend_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<TabLifecycleInfo, String> {
-    // P0-3: Actual suspension - WebView is paused, resources reduced
-    // In WebView2, we can reduce resource allocation while keeping state
+    
+    
     let lifecycle = app.state::<WebViewLifecycle>();
     let current_state = lifecycle.get_state();
 
-    // Can only suspend if WebView is visible/active
+    
     if current_state != WebViewState::Active && current_state != WebViewState::Idle {
         return Err("WebView must be Active or Idle to suspend".to_string());
     }
 
-    // Mark as idle/suspending
+    
     lifecycle.mark_idle();
 
     log::info!("Tab {} suspended (reduced resources, state preserved)", tabId);
@@ -1396,7 +1584,7 @@ fn suspend_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
     Ok(TabLifecycleInfo {
         tab_id: tabId,
         lifecycle_state: "suspended".to_string(),
-        estimated_memory_mb: 10.0, // Reduced estimate after suspension
+        estimated_memory_mb: 10.0, 
         can_suspend: false,
         can_evict: true,
     })
@@ -1404,8 +1592,8 @@ fn suspend_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
 
 #[tauri::command]
 fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<TabLifecycleInfo, String> {
-    // P0-3: Full eviction - WebView is destroyed, resources released
-    // P0: With causal observability - capture state before/after
+    
+    
     let lifecycle = app.state::<WebViewLifecycle>();
     let current_state = lifecycle.get_state();
     let previous_state_str = match current_state {
@@ -1417,9 +1605,9 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
         WebViewState::Restoring => "restoring",
     };
 
-    // Already evicted - emit completed event and return
+    
     if current_state == WebViewState::Uninitialized || current_state == WebViewState::Destroyed {
-        // Emit completed event for idempotent call
+        
         let event = LifecycleEvent::new(
             format!("evt-{}-{}", tabId, next_event_sequence()),
             next_event_sequence(),
@@ -1441,7 +1629,7 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
                 process_count: 0,
                 processes: vec![],
             },
-            true, // action succeeded (no-op is success)
+            true, 
         );
         emit_lifecycle_event(&app, event);
 
@@ -1454,12 +1642,12 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
         });
     }
 
-    // CAPTURE BEFORE STATE
+    
     let mut sys = System::new();
     sys.refresh_all();
     let process_before = capture_process_state(&sys);
 
-    // Calculate pressure level
+    
     let total_mem = sys.total_memory() as f64 / (1024.0 * 1024.0);
     let avail_mem = sys.available_memory() as f64 / (1024.0 * 1024.0);
     let pressure_ratio = avail_mem / total_mem;
@@ -1473,7 +1661,7 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
         "critical"
     };
 
-    // EMIT EVICT REQUESTED
+    
     let evict_requested_event = LifecycleEvent::new(
         format!("evt-req-{}-{}", tabId, next_event_sequence()),
         next_event_sequence(),
@@ -1484,26 +1672,26 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
         pressure_level.to_string(),
         format!("Manual eviction requested for {}", tabId),
         process_before.clone(),
-        process_before.clone(), // No change yet
+        process_before.clone(), 
         true,
     );
     emit_lifecycle_event(&app, evict_requested_event);
 
-    // PERFORM EVICTION
+    
     let action_succeeded = if let Some(browser) = app.get_webview_window("browser") {
         browser.close().is_ok()
     } else {
-        true // No browser window = already clean
+        true 
     };
 
     lifecycle.set_destroyed();
     log::info!("Tab {} evicted (WebView destroyed, resources released)", tabId);
 
-    // CAPTURE AFTER STATE
+    
     sys.refresh_all();
     let process_after = capture_process_state(&sys);
 
-    // EMIT EVICT COMPLETED
+    
     let evict_completed_event = LifecycleEvent::new(
         format!("evt-cmp-{}-{}", tabId, next_event_sequence()),
         next_event_sequence(),
@@ -1538,8 +1726,8 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
 
 #[tauri::command]
 fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<TabLifecycleInfo, String> {
-    // P0-3: Restore from evicted state
-    // P0: With causal observability - capture state before/after
+    
+    
     let lifecycle = app.state::<WebViewLifecycle>();
     let current_state = lifecycle.get_state();
     let previous_state_str = match current_state {
@@ -1551,7 +1739,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         WebViewState::Creating => "creating",
     };
 
-    // Already active - emit completed event and return
+    
     if current_state == WebViewState::Active || current_state == WebViewState::Idle {
         let process_empty = ProcessStateSnapshot {
             timestamp_ms: current_timestamp_ms(),
@@ -1584,12 +1772,12 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         });
     }
 
-    // CAPTURE BEFORE STATE
+    
     let mut sys = System::new();
     sys.refresh_all();
     let process_before = capture_process_state(&sys);
 
-    // Calculate pressure level
+    
     let total_mem = sys.total_memory() as f64 / (1024.0 * 1024.0);
     let avail_mem = sys.available_memory() as f64 / (1024.0 * 1024.0);
     let pressure_ratio = avail_mem / total_mem;
@@ -1603,7 +1791,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         "critical"
     };
 
-    // Get last URL for this tab
+    
     let tab_manager = app.state::<Mutex<TabManager>>();
     let url_to_load = {
         let tm = tab_manager.lock().unwrap();
@@ -1615,7 +1803,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
             .unwrap_or_else(|| HOMEPAGE.to_string())
     };
 
-    // EMIT RESTORE REQUESTED
+    
     let restore_requested_event = LifecycleEvent::new(
         format!("rst-req-{}-{}", tabId, next_event_sequence()),
         next_event_sequence(),
@@ -1631,18 +1819,18 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
     );
     emit_lifecycle_event(&app, restore_requested_event);
 
-    // Set restoring state
+    
     lifecycle.set_restoring();
 
-    // Clone process_before for potential error case
+    
     let process_before_for_error = process_before.clone();
 
-    // Create WebView
+    
     let handle = app.app_handle().clone();
     let main_window = match app.get_webview_window("main") {
         Some(w) => w,
         None => {
-            // EMIT RESTORE FAILED
+            
             let event = LifecycleEvent::new(
                 format!("rst-fail-{}-{}", tabId, next_event_sequence()),
                 next_event_sequence(),
@@ -1661,15 +1849,15 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         }
     };
 
-    let main_pos = main_window.inner_position().unwrap_or_default();
-    let main_size = main_window.inner_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
-    let scale = main_window.scale_factor().unwrap_or(1.0);
-    let geo = compute_browser_geometry(main_pos, main_size, scale);
+    let main_pos = main_window.outer_position().unwrap_or_default();
+    let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
 
-    let logical_x = geo.x as f64 / scale;
-    let logical_y = geo.y as f64 / scale;
-    let logical_width = geo.width as f64 / scale;
-    let logical_height = geo.height as f64 / scale;
+
+    let geo = compute_browser_geometry(main_pos, main_size, 1.0);
+    let pos_x = geo.x as f64;
+    let pos_y = geo.y as f64;
+    let size_w = geo.width as f64;
+    let size_h = geo.height as f64;
 
     let webview_url: WebviewUrl = match url::Url::parse(&url_to_load) {
         Ok(u) => WebviewUrl::External(u),
@@ -1678,8 +1866,8 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
 
     match WebviewWindowBuilder::new(&handle, "browser", webview_url)
         .title("EduOS Browser")
-        .position(logical_x, logical_y)
-        .inner_size(logical_width, logical_height)
+        .position(pos_x, pos_y)
+        .inner_size(size_w, size_h)
         .decorations(false)
         .resizable(false)
         .skip_taskbar(true)
@@ -1688,18 +1876,20 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         .parent(&main_window)
     {
         Ok(builder) => match builder.build() {
-            Ok(_) => {
+            Ok(browser_win) => {
+                
+                disable_main_window_rounded_corners(&browser_win);
                 lifecycle.mark_active();
                 *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
                 *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
 
                 log::info!("Tab {} restored from evicted state", tabId);
 
-                // CAPTURE AFTER STATE
+                
                 sys.refresh_all();
                 let process_after = capture_process_state(&sys);
 
-                // EMIT RESTORE COMPLETED
+                
                 let restore_completed_event = LifecycleEvent::new(
                     format!("rst-cmp-{}-{}", tabId, next_event_sequence()),
                     next_event_sequence(),
@@ -1724,7 +1914,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
                 })
             }
             Err(e) => {
-                // EMIT RESTORE FAILED
+                
                 sys.refresh_all();
                 let process_after = capture_process_state(&sys);
 
@@ -1748,7 +1938,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
             }
         },
         Err(e) => {
-            // EMIT RESTORE FAILED
+            
             sys.refresh_all();
             let process_after = capture_process_state(&sys);
 
@@ -1796,7 +1986,7 @@ fn get_tab_lifecycle(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: Stri
     })
 }
 
-// ─── Commands: Tab Management ─────────────────────────────────────────────────
+
 
 #[tauri::command]
 fn create_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<TabSnapshot, String> {
@@ -1871,26 +2061,26 @@ fn get_tab_snapshots(app: tauri::AppHandle) -> Result<Vec<TabSnapshot>, String> 
     Ok(snapshots)
 }
 
-// ─── Commands: Memory Tracking ────────────────────────────────────────────────
 
-// ─── Commands: WebView2 Telemetry (P0: Authoritative Process Attribution) ─────────
-//
-// STRICT Architecture:
-//   Production CoreWebView2Environment
-//         ↓
-//   GetProcessInfos()
-//         ↓
-//   PID + authoritative ProcessKind       ← NOT name heuristics
-//         ↓
-//   sysinfo (memory only)                  ← memory only, not identity
-//
-// References:
-// - ICoreWebView2Environment.GetProcessInfos():
-//   https://learn.microsoft.com/en-us/dotnet/api/microsoft.web.webview2.core.corewebview2environment.getprocessinfos
-// - ICoreWebView2ProcessInfo (Kind + ProcessId):
-//   https://learn.microsoft.com/en-us/dotnet/api/microsoft.web.webview2.core.corewebview2processinfo
-// - COREWEBVIEW2_PROCESS_KIND enum values:
-//   Browser(0) | Renderer(1) | Utility(2) | SandboxHelper(3) | GPU(4) | PPAPIPlugin(5) | PPAPIBroker(6)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /// Authoritative WebView2 process snapshot
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -1955,6 +2145,7 @@ impl WebView2ProcessSnapshot {
 #[cfg(windows)]
 fn sample_webview2_memory(
     browser_window: &tauri::WebviewWindow,
+    app: &tauri::AppHandle,
 ) -> Result<(f64, u32, u32, Vec<u32>), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use windows::core::Interface;
@@ -2034,13 +2225,18 @@ fn sample_webview2_memory(
         .take()
         .ok_or_else(|| "WebView2 not initialized".to_string())?;
 
-    // sysinfo: RSS for PIDs from WebView2 API
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let total_mb = webview2_pids.iter()
-        .filter_map(|&pid| sys.process(Pid::from_u32(pid)))
-        .map(|proc| proc.memory() as f64 / (1024.0 * 1024.0))
-        .sum();
+    
+    
+    let cached = app.state::<CachedSystem>();
+
+    
+    let sysinfo_pids: Vec<Pid> = webview2_pids.iter().map(|&p| Pid::from_u32(p)).collect();
+
+    
+    cached.refresh_processes(&sysinfo_pids);
+
+    
+    let total_mb = cached.get_processes_memory(&webview2_pids);
 
     Ok((total_mb, browser_count, renderer_count, webview2_pids))
 }
@@ -2069,11 +2265,11 @@ fn get_webview2_process_snapshot(app: tauri::AppHandle) -> Result<WebView2Proces
     let browser_window = app.get_webview_window("browser")
         .ok_or_else(|| "Browser window not found".to_string())?;
 
-    // ── P0.2-P0.5: Memory + PIDs from WebView2 API (one with_webview call) ──
+    
     let (total_mb, browser_count, renderer_count, webview2_pids) =
-        sample_webview2_memory(&browser_window)?;
+        sample_webview2_memory(&browser_window, &app)?;
 
-    // ── Env identity: BrowserVersionString + UserDataFolder ─────────────────────
+    
     let env_result_arc: Arc<Mutex<Option<(Option<String>, Option<String>)>>> =
         Arc::new(Mutex::new(None));
 
@@ -2124,7 +2320,7 @@ fn get_webview2_process_snapshot(app: tauri::AppHandle) -> Result<WebView2Proces
         .take()
         .ok_or_else(|| "WebView2 not initialized".to_string())?;
 
-    // ── Get Kinds from a fresh GetProcessInfos call (aligned by index with PIDs) ──
+    
     let kinds_result_arc: Arc<Mutex<Option<Vec<String>>>> = Arc::new(Mutex::new(None));
 
     let _r = browser_window.with_webview({
@@ -2185,15 +2381,14 @@ fn get_webview2_process_snapshot(app: tauri::AppHandle) -> Result<WebView2Proces
     let mut ppapi_plugin_count = 0u32;
     let mut ppapi_broker_count = 0u32;
 
-    // sysinfo: RSS lookup for PIDs from WebView2 API
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    
+    let cached = app.state::<CachedSystem>();
+    let sysinfo_pids: Vec<Pid> = webview2_pids.iter().map(|&p| Pid::from_u32(p)).collect();
+    cached.refresh_processes(&sysinfo_pids);
 
     for (i, &pid) in webview2_pids.iter().enumerate() {
         let kind = webview2_kinds.get(i).cloned().unwrap_or_else(|| "Unknown".to_string());
-        let memory_mb = sys.process(Pid::from_u32(pid))
-            .map(|proc| proc.memory() as f64 / (1024.0 * 1024.0))
-            .unwrap_or(0.0);
+        let memory_mb = cached.get_processes_memory(&[pid]);
 
         match kind.as_str() {
             "GPU" => gpu_count += 1,
@@ -2259,27 +2454,27 @@ fn take_pwstr(pwstr: windows::core::PWSTR) -> String {
 #[tauri::command]
 fn get_memory_snapshot(app: tauri::AppHandle) -> Result<MemorySnapshot, String> {
     let tracker = app.state::<Mutex<MemoryTracker>>();
+    let cached = app.state::<CachedSystem>();
 
-    // Use sysinfo for real memory measurements
-    let mut sys = System::new_all();
-    sys.refresh_all();
+    
+    
+    cached.refresh_memory();
 
-    // Get process memory (Tauri process - includes WebView2 on Windows)
+    
     let pid = Pid::from_u32(std::process::id());
-    let (combined_rss_mb, combined_virt_mb) = if let Some(process) = sys.process(pid) {
-        (
-            process.memory() as f64 / 1024.0 / 1024.0, // RSS in MB
-            process.virtual_memory() as f64 / 1024.0 / 1024.0, // Virtual in MB
-        )
-    } else {
-        (0.0, 0.0) // Fallback if process not found
-    };
+    let (combined_rss_mb, combined_virt_mb) = cached.get_process_memory(pid)
+        .map(|(mem, virt)| (
+            mem as f64 / 1024.0 / 1024.0, 
+            virt as f64 / 1024.0 / 1024.0, 
+        ))
+        .unwrap_or((0.0, 0.0));
 
-    // Get system memory
-    let total_ram_mb = sys.total_memory() as f64 / 1024.0 / 1024.0;
-    let available_ram_mb = sys.available_memory() as f64 / 1024.0 / 1024.0;
+    
+    let (total_ram, available_ram) = cached.get_system_memory();
+    let total_ram_mb = total_ram as f64 / 1024.0 / 1024.0;
+    let available_ram_mb = available_ram as f64 / 1024.0 / 1024.0;
 
-    // Calculate memory pressure
+    
     let pressure_ratio = available_ram_mb / total_ram_mb;
     let pressure_level = if pressure_ratio > 0.5 {
         "low"
@@ -2305,6 +2500,10 @@ fn get_memory_snapshot(app: tauri::AppHandle) -> Result<MemorySnapshot, String> 
     };
 
     let mut t = tracker.lock().unwrap();
+    
+    if t.snapshots.len() >= MAX_MEMORY_SNAPSHOTS {
+        t.snapshots.remove(0);
+    }
     t.snapshots.push(snapshot.clone());
 
     Ok(snapshot)
@@ -2317,7 +2516,7 @@ fn get_memory_history(app: tauri::AppHandle) -> Result<Vec<MemorySnapshot>, Stri
     Ok(t.snapshots.clone())
 }
 
-// ─── Commands: Navigation Patterns ─────────────────────────────────────────────
+
 
 #[tauri::command]
 fn get_navigation_events(app: tauri::AppHandle, limit: Option<usize>) -> Result<Vec<NavigationEvent>, String> {
@@ -2346,7 +2545,7 @@ fn analyze_patterns(app: tauri::AppHandle) -> Result<SequenceAnalysis, String> {
     Ok(t.analyze_sequence())
 }
 
-// ─── Commands: Session & Research Export ─────────────────────────────────────
+
 
 #[tauri::command]
 fn start_research_session(app: tauri::AppHandle) -> Result<ResearchSession, String> {
@@ -2396,7 +2595,7 @@ fn export_research_data(app: tauri::AppHandle) -> Result<ResearchExport, String>
         m.snapshots.clone()
     };
 
-    // Update session stats
+    
     let mut session_update = session.clone();
     if let Some(ref mut sess) = session_update {
         sess.gap_markers_count = gap_markers.len();
@@ -2434,7 +2633,7 @@ fn get_research_questions(app: tauri::AppHandle) -> Result<Vec<String>, String> 
     Ok(s.research_questions.clone())
 }
 
-// ─── Commands: App Info ──────────────────────────────────────────────────────
+
 
 #[tauri::command]
 fn get_app_info() -> AppInfo {
@@ -2467,17 +2666,64 @@ struct AppInfo {
     research_notes: Vec<String>,
 }
 
-// ─── Session Data ────────────────────────────────────────────────────────────
+
+
+/// Maximum number of session data entries to retain.
+/// Uses FIFO eviction when limit is reached.
+const MAX_SESSION_DATA_ENTRIES: usize = 50;
 
 struct SessionData {
+    /// Bounded HashMap: keeps at most MAX_SESSION_DATA_ENTRIES entries.
+    /// Oldest entry is evicted when limit is reached (FIFO).
     sessions: Mutex<HashMap<String, serde_json::Value>>,
+    /// Track insertion order for FIFO eviction
+    insertion_order: Mutex<Vec<String>>,
+}
+
+impl SessionData {
+    /// Insert with bounded retention (FIFO eviction)
+    fn insert(&self, key: String, data: serde_json::Value) {
+        let mut sessions = self.sessions.lock().unwrap();
+        let mut order = self.insertion_order.lock().unwrap();
+
+        
+        if sessions.contains_key(&key) {
+            sessions.insert(key.clone(), data);
+            order.retain(|k| k != &key);
+            order.push(key);
+            return;
+        }
+
+        
+        if sessions.len() >= MAX_SESSION_DATA_ENTRIES {
+            if let Some(oldest_key) = order.first().cloned() {
+                sessions.remove(&oldest_key);
+                order.remove(0);
+            }
+        }
+
+        sessions.insert(key.clone(), data);
+        order.push(key);
+    }
 }
 
 #[tauri::command]
 fn save_session_data(app: tauri::AppHandle, key: String, data: serde_json::Value) -> Result<(), String> {
     let session = app.state::<SessionData>();
-    let mut sessions = session.sessions.lock().unwrap();
-    sessions.insert(key, data);
+    session.insert(key, data);
+    Ok(())
+}
+
+/// Save benchmark results directly to a JSON file (for harness use)
+#[tauri::command]
+fn save_benchmark_results(data: serde_json::Value) -> Result<(), String> {
+    log::info!("[RUN1] save_benchmark_results called with {} control, {} treatment runs",
+        data.get("control").and_then(|c| c.as_array()).map(|c| c.len()).unwrap_or(0),
+        data.get("treatment").and_then(|t| t.as_array()).map(|t| t.len()).unwrap_or(0));
+    let path = std::path::PathBuf::from(r"D:\main\Projects\BRWSR\benchmark_results.json");
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write results: {}", e))?;
+    log::info!("Benchmark results saved to {:?}", path);
     Ok(())
 }
 
@@ -2492,11 +2738,13 @@ fn load_session_data(app: tauri::AppHandle, key: String) -> Result<Option<serde_
 fn clear_session_data(app: tauri::AppHandle) -> Result<(), String> {
     let session = app.state::<SessionData>();
     let mut sessions = session.sessions.lock().unwrap();
+    let mut order = session.insertion_order.lock().unwrap();
     sessions.clear();
+    order.clear();
     Ok(())
 }
 
-// ─── Lifecycle Event Store Commands (P0: Causal Observability) ─────────────────
+
 
 /// Start a benchmark run with full metadata
 #[tauri::command]
@@ -2509,7 +2757,7 @@ fn start_benchmark_run(
 ) -> Result<(), String> {
     let event_store = app.state::<LifecycleEventStore>();
 
-    // Build full metadata
+    
     let sys = System::new_all();
     let ram_mb = sys.total_memory() / (1024 * 1024);
 
@@ -2523,10 +2771,10 @@ fn start_benchmark_run(
         cpu_brand: sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_else(|| "Unknown".to_string()),
         cpu_count: sys.cpus().len(),
         ram_mb,
-        webview2_version: None, // Would require WebView2 COM interop
+        webview2_version: None, 
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         build_type: if cfg!(debug_assertions) { "debug".to_string() } else { "release".to_string() },
-        idle_threshold_secs: 300, // Default
+        idle_threshold_secs: 300, 
         memory_pressure_thresholds: PressureThresholds::default(),
         start_time_ms: current_timestamp_ms(),
         end_time_ms: None,
@@ -2551,7 +2799,7 @@ fn end_benchmark_run(app: tauri::AppHandle) -> Result<BenchmarkRunResult, String
     let events = event_store.get_events();
     let stats = event_store.get_stats();
 
-    // Update end time
+    
     let end_time_ms = current_timestamp_ms();
     let duration_ms = end_time_ms - metadata.start_time_ms;
 
@@ -2614,26 +2862,27 @@ fn clear_lifecycle_events(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// ─── Benchmark Run Command (P0: Integration) ─────────────────────────────────
 
-/// Run a benchmark workload and collect measurements
+
+/// Run a benchmark workload and collect measurements (synchronous version)
 #[tauri::command]
-async fn run_benchmark_workload(
+fn run_benchmark_workload(
     app: tauri::AppHandle,
     tab_count: u32,
     urls: Vec<String>,
     measurement_seconds: u64,
     sampling_interval_ms: u64,
-    condition: String,  // "control" | "treatment" — labels for result comparison
+    condition: String,
 ) -> Result<BenchmarkWorkloadResult, String> {
-    log::info!("Starting benchmark workload: {} tabs for {}s (condition={})", tab_count, measurement_seconds, condition);
-
-    // Start benchmark run in event store
+    log::info!("[RUN1] run_benchmark_workload INVOKED: {} tabs, {}s, condition={}", tab_count, measurement_seconds, condition);
+    eprintln!("[RUN1] run_benchmark_workload INVOKED via IPC");
+    log::info!("[RUN1] state access check...");
+    
     let run_id = format!("bench-{}", current_timestamp_ms());
     let event_store = app.state::<LifecycleEventStore>();
     let workload_id = format!("workload-{}-tabs", tab_count);
 
-    // Get environment info
+    
     let sys = System::new_all();
     let ram_mb = sys.total_memory() / (1024 * 1024);
 
@@ -2660,10 +2909,10 @@ async fn run_benchmark_workload(
     let start_time_ms = metadata.start_time_ms;
     event_store.start_benchmark_run(metadata);
 
-    // Get tab manager
+    
     let tab_manager = app.state::<Mutex<TabManager>>();
 
-    // Create tabs
+    
     let mut tab_ids = Vec::new();
     for i in 0..tab_count {
         let tab_id = format!("bench-tab-{}", i);
@@ -2690,17 +2939,18 @@ async fn run_benchmark_workload(
         tab_ids.push(tab_id);
     }
 
-    // Wait for warmup
+    
     std::thread::sleep(std::time::Duration::from_secs(30));
 
     let start_time = std::time::Instant::now();
     let mut samples = Vec::new();
 
     while start_time.elapsed().as_secs() < measurement_seconds {
-        // Fresh GetProcessInfos() snapshot every sample — PIDs valid only within that instant.
-        // This is correct: lifecycle can cause processes to appear/disappear.
+        
+        
+        
         let group_memory_mb = app.get_webview_window("browser")
-            .and_then(|w| sample_webview2_memory(&w).ok())
+            .and_then(|w| sample_webview2_memory(&w, &app).ok())
             .map(|(mb, _, _, _)| mb)
             .unwrap_or(0.0);
 
@@ -2708,7 +2958,7 @@ async fn run_benchmark_workload(
         std::thread::sleep(std::time::Duration::from_millis(sampling_interval_ms));
     }
 
-    // Calculate statistics
+    
     let peak = samples.iter().cloned().fold(0.0f64, f64::max);
     let mean = if !samples.is_empty() {
         samples.iter().sum::<f64>() / samples.len() as f64
@@ -2716,7 +2966,7 @@ async fn run_benchmark_workload(
         0.0
     };
 
-    // Get lifecycle stats
+    
     let lifecycle_stats = event_store.get_stats();
     let lifecycle_events = event_store.get_events();
 
@@ -2757,147 +3007,159 @@ struct BenchmarkWorkloadResult {
 }
 
 
-// ─── Headless File-Based Benchmark ──────────────────────────────────────────────
-// When D:\main\Projects\BRWSR\benchmark_config.json exists, run headless and exit.
-// Config format: { "mode": "control" | "treatment", "seconds": 90, "interval_ms": 100 }
-#[cfg(windows)]
-fn run_file_benchmark() -> Option<()> {
-    use std::path::PathBuf;
-    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-    use std::time::Instant;
 
-    let config_path = PathBuf::from(r"D:\main\Projects\BRWSR\benchmark_config.json");
-    if !config_path.exists() {
-        return None; // Not in benchmark mode
+
+
+static BENCHMARK_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns true if the app was started with --benchmark flag.
+/// Frontend checks this on mount to auto-start the harness.
+#[tauri::command]
+fn is_benchmark_mode() -> bool {
+    let v = BENCHMARK_MODE.load(std::sync::atomic::Ordering::SeqCst);
+    log::info!("[RUN1] is_benchmark_mode called, returning {}", v);
+    v
+}
+
+/// Exits the application (used after harness completes in benchmark mode).
+#[tauri::command]
+fn exit_app() {
+    log::info!("[RUN1] exit_app invoked — shutting down");
+    std::process::exit(0);
+}
+
+/// Simple test command to verify IPC works.
+#[tauri::command]
+fn test_command(message: String) -> Result<String, String> {
+    log::info!("[TEST] test_command called with: {}", message);
+    eprintln!("[TEST] test_command called with: {}", message);
+    Ok(format!("ECHO: {}", message))
+}
+
+/// Long-running test command (simulates benchmark).
+#[tauri::command]
+async fn test_long_command(app: tauri::AppHandle, seconds: u64) -> Result<String, String> {
+    log::info!("[TEST] test_long_command called: sleeping {}s", seconds);
+    
+    let event_store = app.state::<LifecycleEventStore>();
+    log::info!("[TEST] test_long_command: state accessed OK");
+    std::thread::sleep(std::time::Duration::from_secs(seconds));
+    log::info!("[TEST] test_long_command completed after {}s", seconds);
+    Ok(format!("slept {} seconds", seconds))
+}
+
+/// Quick benchmark test (2s warmup, 5s measurement).
+#[tauri::command]
+async fn test_benchmark_quick(
+    app: tauri::AppHandle,
+    tab_count: u32,
+    condition: String,
+) -> Result<BenchmarkWorkloadResult, String> {
+    log::info!("[TEST] test_benchmark_quick called: {} tabs, condition={}", tab_count, condition);
+    eprintln!("[TEST] test_benchmark_quick INVOKED via IPC");
+
+    let event_store = app.state::<LifecycleEventStore>();
+    log::info!("[TEST] test_benchmark_quick: state accessed OK");
+
+    let event_store = app.state::<LifecycleEventStore>();
+    let cached = app.state::<CachedSystem>();
+    let run_id = format!("quick-{}", current_timestamp_ms());
+
+    
+    let (total_ram, _) = cached.get_system_memory();
+    let ram_mb = total_ram / (1024 * 1024);
+
+    
+    cached.refresh_all();
+    let (cpu_brand, cpu_count) = {
+        let sys = cached.sys.lock().unwrap();
+        (
+            sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_else(|| "Unknown".to_string()),
+            sys.cpus().len(),
+        )
+    };
+
+    let metadata = BenchmarkMetadata {
+        run_id: run_id.clone(),
+        workload_id: format!("quick-{}-tabs", tab_count),
+        run_index: 1,
+        condition: condition.clone(),
+        os: "Windows".to_string(),
+        os_version: std::env::consts::OS.to_string(),
+        cpu_brand,
+        cpu_count,
+        ram_mb,
+        webview2_version: None,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_type: if cfg!(debug_assertions) { "debug".to_string() } else { "release".to_string() },
+        idle_threshold_secs: 300,
+        memory_pressure_thresholds: PressureThresholds::default(),
+        start_time_ms: current_timestamp_ms(),
+        end_time_ms: None,
+        duration_ms: None,
+    };
+    event_store.start_benchmark_run(metadata);
+
+    
+    log::info!("[TEST] test_benchmark_quick: warmup 2s...");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    
+    log::info!("[TEST] test_benchmark_quick: measuring 5s...");
+    let start_time = std::time::Instant::now();
+    let mut samples = Vec::new();
+    let pid = Pid::from_u32(std::process::id());
+
+    while start_time.elapsed().as_secs() < 5 {
+        
+        
+        cached.refresh_memory();
+        let rss = cached.get_process_memory(pid)
+            .map(|(mem, _)| mem as f64 / 1024.0 / 1024.0)
+            .unwrap_or(0.0);
+        samples.push(rss);
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let config_json = std::fs::read_to_string(&config_path).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&config_json).ok()?;
-
-    let mode: String = config.get("mode")?.as_str()?.to_string();
-    let measurement_seconds: u64 = config.get("seconds").and_then(|v| v.as_u64()).unwrap_or(90);
-    let sampling_interval_ms: u64 = config.get("interval_ms").and_then(|v| v.as_u64()).unwrap_or(100);
-    let lifecycle_enabled = mode == "treatment";
-
-    println!("BENCHMARK_MODE|{}|{}s|{}ms_interval", mode, measurement_seconds, sampling_interval_ms);
-
-    // Clone values needed in async context
-    let mode_for_async = mode.clone();
-    let lifecycle_for_async = lifecycle_enabled;
-
-    // Build minimal Tauri app for benchmark
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
-        let app = tauri::Builder::default()
-            .manage(WebViewLifecycle::default())
-            .manage(LifecycleEventStore::default())
-            .manage(Mutex::new(MemoryTracker::default()))
-            .manage(Mutex::new(SequenceTracker::default()))
-            .manage(Mutex::new(TabManager::default()))
-            .manage(Mutex::new(SessionManager::default()))
-            .setup(move |app| {
-                // Apply lifecycle setting via LifecycleEventStore condition
-                let event_store = app.handle().state::<LifecycleEventStore>();
-                {
-                    let mut cond = event_store.condition.lock().unwrap();
-                    *cond = Some(mode_for_async.clone());
-                }
-                if lifecycle_for_async {
-                    log::info!("Treatment run: lifecycle events will be tracked");
-                } else {
-                    log::info!("Control run: lifecycle manager OFF");
-                }
-                Ok(())
-            })
-            .build(tauri::generate_context!())
-            .expect("Failed to build Tauri app for benchmark");
-
-        // Create hidden browser window
-        let handle = app.handle().clone();
-        let browser = WebviewWindowBuilder::new(
-            &handle,
-            "benchmark_browser",
-            WebviewUrl::External(url::Url::parse("https://www.example.com").unwrap()),
-        )
-        .title("Benchmark")
-        .inner_size(1280.0, 800.0)
-        .visible(true)  // Start visible so WebView2 initializes
-        .focused(false)
-        .decorations(false)
-        .skip_taskbar(true)
-        .build()
-        .expect("Failed to create benchmark browser window");
-
-        // Wait for WebView2 to initialize
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        // Run measurement loop
-        let start_time = Instant::now();
-        let mut samples: Vec<f64> = Vec::new();
-
-        while start_time.elapsed().as_secs() < measurement_seconds {
-            let memory_mb = sample_webview2_memory(&browser)
-                .map(|(mb, _, _, _)| mb)
-                .unwrap_or(0.0);
-            samples.push(memory_mb);
-            std::thread::sleep(std::time::Duration::from_millis(sampling_interval_ms));
-        }
-
-        // Compute stats
-        let count = samples.len();
-        if count == 0 {
-            eprintln!("BENCHMARK_ERROR: no samples collected");
-            std::process::exit(1);
-        }
-        let peak = samples.iter().cloned().fold(0.0_f64, f64::max);
-        let sum: f64 = samples.iter().sum();
-        let mean = sum / count as f64;
-
-        // Get lifecycle stats
-        let lifecycle_state = app.state::<LifecycleEventStore>();
-        let lifecycle_stats = lifecycle_state.get_stats();
-
-        // Write results to file
-        let results = serde_json::json!({
-            "mode": mode.clone(),
-            "mean_mb": mean,
-            "peak_mb": peak,
-            "samples": count,
-            "lifecycle_enabled": lifecycle_enabled,
-            "evict_requested": lifecycle_stats.evict_requested,
-            "evict_completed": lifecycle_stats.evict_completed,
-        });
-
-        let results_path = PathBuf::from(r"D:\main\Projects\BRWSR\benchmark_results.json");
-        std::fs::write(&results_path, serde_json::to_string_pretty(&results).unwrap())
-            .expect("Failed to write results");
-
-        println!("RUN_RESULT|{}|mean={:.1}|peak={:.1}|samples={}|lifecycle_enabled={}|evict_requested={}|evict_completed={}",
-            mode, mean, peak, count, lifecycle_enabled,
-            lifecycle_stats.evict_requested, lifecycle_stats.evict_completed);
-
-        // Clean up trigger file
-        let _ = std::fs::remove_file(&config_path);
-
-        std::process::exit(0);
+    log::info!("[TEST] test_benchmark_quick: completed {} samples", samples.len());
+    let stats = event_store.get_stats();
+    let start_ms = event_store.get_metadata().map(|m| m.start_time_ms).unwrap_or(0);
+    Ok(BenchmarkWorkloadResult {
+        run_id,
+        workload_id: format!("quick-{}-tabs", tab_count),
+        tab_count,
+        peak_memory_mb: samples.iter().cloned().fold(0.0f64, f64::max),
+        mean_memory_mb: if !samples.is_empty() { samples.iter().sum::<f64>() / samples.len() as f64 } else { 0.0 },
+        samples,
+        lifecycle_stats: stats,
+        lifecycle_events: event_store.get_events(),
+        end_time_ms: current_timestamp_ms(),
+        duration_ms: current_timestamp_ms().saturating_sub(start_ms),
     })
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────────────
+
 
 fn main() {
-    // Check for file-based benchmark trigger FIRST
-    #[cfg(windows)]
-    if run_file_benchmark().is_some() {
-        return; // Already ran benchmark and exited
-    }
+    
+    use std::time::SystemTime;
+    let program_start = SystemTime::now();
+    let program_start_instant = std::time::Instant::now();
+
+    let args: Vec<String> = std::env::args().collect();
+
+    let benchmark_mode = args.get(1).map(|s| s.as_str()) == Some("--benchmark");
+    BENCHMARK_MODE.store(benchmark_mode, std::sync::atomic::Ordering::SeqCst);
 
     log::info!("Starting EduOS Browser v{} - Research Edition", env!("CARGO_PKG_VERSION"));
     log::info!("Research: Observable behavior tracking for knowledge work analysis");
     log::info!("Storage = Raw observations. Labels = Derived (analysis layer).");
+    if benchmark_mode {
+        log::info!("BENCHMARK MODE: Harness will auto-start on frontend mount");
+    }
 
-    // Initialize state
-    let tab_manager = Mutex::new(TabManager::default());
+    
+    let tab_manager = TabManager::default();
     let default_tab = TabData {
         id: "default".to_string(),
         history_index: 0,
@@ -2905,10 +3167,14 @@ fn main() {
         last_accessed: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
     };
     {
-        let mut tm = tab_manager.lock().unwrap();
-        tm.tabs.lock().unwrap().insert("default".to_string(), default_tab);
-        tm.history.lock().unwrap().push(HOMEPAGE.to_string());
+        let mut tm = tab_manager.tabs.lock().unwrap();
+        tm.insert("default".to_string(), default_tab);
+        let mut history = tab_manager.history.lock().unwrap();
+        history.push(HOMEPAGE.to_string());
     }
+
+    
+    let builder_start_instant = std::time::Instant::now();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -2921,55 +3187,64 @@ fn main() {
         .manage(Mutex::new(SessionManager::default()))
         .manage(SessionData {
             sessions: Mutex::new(HashMap::new()),
+            insertion_order: Mutex::new(Vec::new()),
         })
+        .manage(CachedSystem::new()) 
+        .manage(Mutex::new(StartupProfiler::new())) 
         .invoke_handler(tauri::generate_handler![
-            // Window
+            
             minimize_window,
             toggle_maximize,
             close_window,
             get_app_version,
-            // WebView Lifecycle (Lazy creation, destroy-on-idle)
+            is_benchmark_mode,
+            exit_app,
+            test_command,
+            test_long_command,
+            test_benchmark_quick,
+            
             get_webview_state,
             ensure_webview_active,
             destroy_webview,
             set_idle_threshold,
             record_activity,
             record_navigation,
-            // Tab Lifecycle Management (P0-3)
+            
             suspend_tab,
             evict_tab,
             restore_tab,
             get_tab_lifecycle,
-            // Navigation
+            
             navigate_browser,
             reload_browser,
             back_browser,
             forward_browser,
-            // Tab management
+            
             create_tab,
             switch_tab,
             close_tab,
             get_tab_snapshots,
-            // Memory
+            
             get_memory_snapshot,
             get_memory_history,
             #[cfg(windows)]
-            get_webview2_process_snapshot,  // P0: Authoritative WebView2 telemetry
-            // Patterns (raw analysis)
+            get_webview2_process_snapshot,  
+            
             get_navigation_events,
             get_domain_sequence,
             analyze_patterns,
-            // Research
+            
             start_research_session,
             get_current_session,
             export_research_data,
             get_literature_notes,
             get_research_questions,
-            // Session
+            
             save_session_data,
             load_session_data,
             clear_session_data,
-            // Lifecycle Event Store (P0: Causal Observability)
+            save_benchmark_results,
+            
             start_benchmark_run,
             end_benchmark_run,
             get_lifecycle_events,
@@ -2977,24 +3252,63 @@ fn main() {
             clear_lifecycle_events,
             run_benchmark_workload,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
 
-            let main_window = app.get_webview_window("main").expect("main window not found");
+            
+            let profiler = app.state::<Mutex<StartupProfiler>>();
+            let mut p = profiler.lock().unwrap();
 
-            // NOTE: WebView is NOT created on startup - lazy creation
-            log::info!("EduOS Browser Research Edition ready");
-            log::info!("WebView lifecycle: Lazy creation enabled");
-            log::info!("WebView will be created on first navigation");
+            
+            let pre_builder_ms = builder_start_instant.elapsed().as_millis() as u64;
+            let total_elapsed = program_start_instant.elapsed().as_millis() as u64;
+            log::info!("[STARTUP] TOTAL ELAPSED at setup(): {}ms", total_elapsed);
+            log::info!("[STARTUP]   pre_builder_chain: {}ms", pre_builder_ms);
+            log::info!("[STARTUP]   setup_entry_delay: {}ms", total_elapsed - pre_builder_ms);
 
-            // Sync layout only when window events happen
+            p.phase_start("setup_tauri_complete");
+
+            
+            p.phase_start("window_builder_create");
+            let main_window = WebviewWindowBuilder::new(
+                &handle,
+                "main",
+                WebviewUrl::App("index.html".into()),
+            )
+            .title("EduOS Browser")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(960.0, 600.0)
+            .center()
+            .resizable(true)
+            .decorations(false)
+            .visible(true)
+            .focused(true);
+            p.phase_end("window_builder_create", Some("builder created"));
+
+            p.phase_start("window_build");
+            let main_window = match main_window.build() {
+                Ok(w) => {
+                    p.phase_end("window_build", Some("built successfully"));
+                    w
+                }
+                Err(e) => {
+                    p.phase_end("window_build", Some(&format!("FAILED: {}", e)));
+                    panic!("Failed to create main window: {}", e);
+                }
+            };
+
+            
+            disable_main_window_rounded_corners(&main_window);
+
+            p.phase_start("window_event_listeners");
+            
             let resize_handle = handle.clone();
             main_window.on_window_event(move |event| match event {
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
                     sync_browser_layout(&resize_handle);
                 }
                 tauri::WindowEvent::Focused(true) => {
-                    // When main window gains focus, ensure browser is visible if it exists
+                    
                     if let Some(browser) = resize_handle.get_webview_window("browser") {
                         let _ = browser.show();
                         sync_browser_layout(&resize_handle);
@@ -3002,6 +3316,19 @@ fn main() {
                 }
                 _ => {}
             });
+            p.phase_end("window_event_listeners", None);
+
+            p.phase_end("setup_complete", Some("EduOS Browser ready, WebView lazy"));
+
+            
+            let trace = p.finish();
+            log::info!("[STARTUP] Setup trace: {}ms total", trace.total_ms);
+            for (phase, dur) in &trace.phase_breakdown {
+                log::info!("[STARTUP]   {}: {}ms", phase, dur);
+            }
+
+            log::info!("[STARTUP] NOTE: WebView is created on first navigation");
+            log::info!("[STARTUP] Frontend initialization happens in browser process");
 
             Ok(())
         })
