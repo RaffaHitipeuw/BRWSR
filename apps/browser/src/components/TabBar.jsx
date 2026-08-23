@@ -3,13 +3,7 @@ import { clsx } from "clsx";
 import { useTabStore } from "../stores/tabs";
 import { browserCommands } from "./browserCommands";
 
-interface TabBarProps {
-  onTabClick: (tabId: string) => void;
-  onNewTab: () => void;
-  onCloseTab: (tabId: string) => void;
-}
-
-export function TabBar({ onTabClick, onNewTab, onCloseTab }: TabBarProps) {
+export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   const tabs = useTabStore((s) => s.tabs);
   const activeTabId = useTabStore((s) => s.activeTabId);
   const pinTab = useTabStore((s) => s.pinTab);
@@ -19,10 +13,10 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }: TabBarProps) {
   const closeAllTabs = useTabStore((s) => s.closeAllTabs);
   const reorderTabs = useTabStore((s) => s.reorderTabs);
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(
+  const [contextMenu, setContextMenu] = useState(
     null,
   );
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const [draggedTabId, setDraggedTabId] = useState(null);
 
   const handleMinimize = () => browserCommands.minimize();
   const handleMaximize = () => browserCommands.toggleMaximize();
@@ -34,13 +28,13 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }: TabBarProps) {
     return () => document.removeEventListener("click", handleClick);
   }, []);
 
-  const handleContextMenu = (e, tabId: string) => {
+  const handleContextMenu = (e, tabId) => {
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY, tabId });
   };
 
-  const handleDragStart = (e, tabId: string) => {
+  const handleDragStart = (e, tabId) => {
     e.stopPropagation();
     setDraggedTabId(tabId);
     e.dataTransfer.effectAllowed = "move";
@@ -51,7 +45,7 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }: TabBarProps) {
     e.dataTransfer.dropEffect = "move";
   };
 
-  const handleDrop = (e, targetTabId: string) => {
+  const handleDrop = (e, targetTabId) => {
     e.preventDefault();
     if (!draggedTabId || draggedTabId === targetTabId) return;
 

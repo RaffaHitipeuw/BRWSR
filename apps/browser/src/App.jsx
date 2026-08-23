@@ -44,7 +44,7 @@ function App() {
   }, [activeTabId, activeTab?.url, activeTab]);
 
   const handleTabClick = useCallback(
-    (tabId: string) => {
+    (tabId) => {
       setActiveTab(tabId);
     },
     [setActiveTab],
@@ -58,7 +58,7 @@ function App() {
   }, [addTab]);
 
   const handleCloseTab = useCallback(
-    (tabId: string) => {
+    (tabId) => {
       const state = useTabStore.getState();
       const wasActive = state.activeTabId === tabId;
 
@@ -75,7 +75,7 @@ function App() {
   );
 
   const handleNavigate = useCallback(
-    (tabId: string, url: string) => {
+    (tabId, url) => {
       navigate(tabId, url);
       browser.navigate(url, tabId, "typed_url");
     },
