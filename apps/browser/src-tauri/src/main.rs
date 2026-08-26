@@ -63,7 +63,7 @@ fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
@@ -1178,23 +1178,34 @@ async fn navigate_browser(
     #[allow(non_snake_case)]
     navigationType: String,
 ) -> Result<(), String> {
-    
-    let lifecycle = app.state::<WebViewLifecycle>();
-    let needs_creation = lifecycle.get_state() == WebViewState::Uninitialized
-        || lifecycle.get_state() == WebViewState::Destroyed;
+    log::info!("[NEW_TAB_10] navigate_browser command entered");
+    log::info!("[NEW_TAB_10] url: {}, tabId: {}, navigationType: {}", url, tabId, navigationType);
+    log::info!("[NEW_TAB_10] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
 
-    
+    let lifecycle = app.state::<WebViewLifecycle>();
+    let current_state = lifecycle.get_state();
+    let needs_creation = current_state == WebViewState::Uninitialized
+        || current_state == WebViewState::Destroyed;
+
+    log::info!("[NEW_TAB_11] current lifecycle state: {:?}", current_state);
+    log::info!("[NEW_TAB_11] needs_creation: {}", needs_creation);
+
     let profiler = app.state::<Mutex<StartupProfiler>>();
 
     if needs_creation {
 
-        let mut p = profiler.lock().unwrap();
+        let mut p = profiler.lock().map_err(|e| format!("Profiler lock failed: {}", e))?;
         p.phase_start("webview_checking_geometry");
 
 
         let handle = app.app_handle().clone();
+        log::info!("[NEW_TAB_12] looking up main window");
         let main_window = app.get_webview_window("main")
-            .ok_or("Main window not found")?;
+            .ok_or_else(|| {
+                log::error!("[NEW_TAB_12] FAILED: main window not found");
+                "Main window not found".to_string()
+            })?;
+        log::info!("[NEW_TAB_12] main window found");
 
         std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -1204,11 +1215,13 @@ async fn navigate_browser(
 
 
         let geo = compute_browser_geometry(main_pos, main_size, 1.0);
-        
+
         let pos_x = geo.x as f64;
         let pos_y = geo.y as f64;
         let size_w = geo.width as f64;
         let size_h = geo.height as f64;
+
+        log::info!("[NEW_TAB_13] about to create WebView with geometry: x={}, y={}, w={}, h={}", pos_x, pos_y, size_w, size_h);
 
         p.phase_end("webview_checking_geometry", Some("geometry computed"));
 
@@ -1218,6 +1231,7 @@ async fn navigate_browser(
         };
 
         p.phase_start("webview_builder_create");
+        log::info!("[NEW_TAB_14] creating WebviewWindowBuilder");
         match WebviewWindowBuilder::new(&handle, "browser", webview_url)
             .title("EduOS Browser")
             .position(pos_x, pos_y)
@@ -1230,15 +1244,19 @@ async fn navigate_browser(
             .parent(&main_window)
         {
             Ok(builder) => {
+                log::info!("[NEW_TAB_14] builder created successfully");
                 p.phase_end("webview_builder_create", Some("builder created"));
 
                 p.phase_start("webview_build");
+                log::info!("[NEW_TAB_15] about to call builder.build()");
                 match builder.build() {
                     Ok(browser_win) => {
+                        log::info!("[NEW_TAB_15] SUCCESS: builder.build() succeeded");
                         p.phase_end("webview_build", Some("WebView built successfully"));
 
                         disable_main_window_rounded_corners(&browser_win);
                         lifecycle.mark_active();
+                        log::info!("[NEW_TAB_16] lifecycle state updated to active");
 
                         sync_browser_layout(&handle);
 
@@ -1248,23 +1266,37 @@ async fn navigate_browser(
                             log::info!("[WEBVIEW]   {}: {}ms", phase, dur);
                         }
                     }
-                    Err(e) => return Err(format!("Failed to create WebView: {}", e)),
+                    Err(e) => {
+                        log::error!("[NEW_TAB_15] FAILED: builder.build() error: {}", e);
+                        return Err(format!("Failed to create WebView: {}", e));
+                    }
                 }
             }
-            Err(e) => return Err(format!("Failed to create WebView: {}", e)),
+            Err(e) => {
+                log::error!("[NEW_TAB_14] FAILED: WebviewWindowBuilder error: {}", e);
+                return Err(format!("Failed to create WebView: {}", e));
+            }
         }
     } else {
+        log::info!("[NEW_TAB_13] reusing existing WebView (no creation needed)");
         lifecycle.mark_active();
+        log::info!("[NEW_TAB_16] lifecycle state updated to active (reused)");
     }
 
-    
+    log::info!("[NEW_TAB_17] recording navigation");
     lifecycle.record_navigation_sync(&url, &tabId);
 
-    
-    let window = app.get_webview_window("browser").ok_or("Browser not found")?;
+
+    log::info!("[NEW_TAB_17] looking up browser window for navigation");
+    let window = app.get_webview_window("browser").ok_or_else(|| {
+        log::error!("[NEW_TAB_17] FAILED: browser window not found");
+        "Browser not found".to_string()
+    })?;
+    log::info!("[NEW_TAB_17] browser window found, proceeding with navigation");
+
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| format!("Time error: {}", e))?
         .as_millis() as u64;
 
     
@@ -1313,7 +1345,7 @@ async fn navigate_browser(
     let tab_manager = app.state::<Mutex<TabManager>>();
     {
         let tm = tab_manager.lock().unwrap();
-        let tabs = tm.tabs.lock().unwrap();
+        let mut tabs = tm.tabs.lock().unwrap();
         let mut history = tm.history.lock().unwrap();
 
         if let Some(tab) = tabs.get(&tabId) {
@@ -1322,7 +1354,7 @@ async fn navigate_browser(
             history.truncate(new_len);
         }
 
-        
+
         if history.len() >= MAX_HISTORY_ENTRIES {
             
             let remove_count = (history.len() - MAX_HISTORY_ENTRIES) + 1;
@@ -1344,7 +1376,14 @@ async fn navigate_browser(
     
     let encoded = serde_json::to_string(&url).map_err(|e| e.to_string())?;
     let script = format!("window.location.href = {}", encoded);
-    window.eval(&script).map_err(|e| e.to_string())
+    log::info!("[NEW_TAB_18] about to execute navigation script");
+    window.eval(&script).map_err(|e| {
+        log::error!("[NEW_TAB_18] FAILED: window.eval error: {}", e);
+        e.to_string()
+    })?;
+    log::info!("[NEW_TAB_18] navigate_browser completed successfully");
+    log::info!("[NEW_TAB_18] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1990,12 +2029,21 @@ fn get_tab_lifecycle(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: Stri
 
 #[tauri::command]
 fn create_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<TabSnapshot, String> {
-    let tab_manager = app.state::<Mutex<TabManager>>();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    log::info!("[NEW_TAB_10] create_tab command entered");
+    log::info!("[NEW_TAB_10] tabId: {}", tabId);
+    log::info!("[NEW_TAB_10] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
 
-    let tm = tab_manager.lock().unwrap();
-    let mut tabs = tm.tabs.lock().unwrap();
-    let history = tm.history.lock().unwrap();
+    let tab_manager = app.state::<Mutex<TabManager>>();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Time error: {}", e))?
+        .as_secs();
+
+    let tm = tab_manager.lock().map_err(|e| format!("TabManager lock failed: {}", e))?;
+    let mut tabs = tm.tabs.lock().map_err(|e| format!("Tabs lock failed: {}", e))?;
+    let history = tm.history.lock().map_err(|e| format!("History lock failed: {}", e))?;
+
+    log::info!("[NEW_TAB_11] current tabs count: {}", tabs.len());
+    log::info!("[NEW_TAB_11] current history count: {}", history.len());
 
     tabs.remove(&tabId);
 
@@ -2011,11 +2059,17 @@ fn create_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> 
     tabs.insert(tabId.clone(), tab.clone());
 
     Ok(TabSnapshot {
-        tab_id: tabId,
+        tab_id: tabId.clone(),
         current_url: history.last().cloned().unwrap_or_default(),
         history_count: history.len(),
         created_at: now,
         last_accessed: now,
+    })
+    .map(|snapshot| {
+        log::info!("[NEW_TAB_18] create_tab completed successfully");
+        log::info!("[NEW_TAB_18] tabId: {}, history_count: {}", snapshot.tab_id, snapshot.history_count);
+        log::info!("[NEW_TAB_18] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
+        snapshot
     })
 }
 
@@ -3140,8 +3194,70 @@ async fn test_benchmark_quick(
 
 
 
+/// Panic handler that writes to a log file for diagnostics
+fn setup_panic_handler() {
+    use std::panic;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+
+    // Get app-local log directory
+    let log_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let panic_log_path = log_dir.join("panic_log.txt");
+    let panic_log_path_for_closure = panic_log_path.clone();
+    let panic_log_path_for_log = panic_log_path.clone();
+
+    panic::set_hook(Box::new(move |panic_info| {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+
+        let location = panic_info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Unknown panic payload".to_string()
+        };
+
+        let log_line = format!(
+            "[{}] PANIC at {}: {}\n",
+            timestamp, location, message
+        );
+
+        // Write to stderr
+        eprintln!("{}", log_line);
+        eprintln!("PANIC DETAILS: {:?}", panic_info);
+
+        // Write to file
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log_path_for_closure)
+        {
+            let _ = writeln!(file, "{}", log_line);
+            let _ = writeln!(file, "Full panic info: {:?}", panic_info);
+            let _ = writeln!(file, "---");
+        }
+
+        eprintln!("[PANIC] Panic written to: {:?}", panic_log_path_for_closure);
+    }));
+
+    log::info!("[STARTUP] Panic handler installed. Log path: {:?}", panic_log_path_for_log);
+}
+
 fn main() {
-    
+
+    setup_panic_handler();
+
     use std::time::SystemTime;
     let program_start = SystemTime::now();
     let program_start_instant = std::time::Instant::now();

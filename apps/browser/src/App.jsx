@@ -51,9 +51,23 @@ function App() {
   );
 
   const handleNewTab = useCallback(() => {
-    const newTabId = addTab();
-    if (newTabId) {
-      browser.createTab(newTabId);
+    console.info("[NEW_TAB_01] + UI handler entered");
+    console.info("[NEW_TAB_01] timestamp:", Date.now());
+    try {
+      console.info("[NEW_TAB_02] frontend tab state update started");
+      const newTabId = addTab();
+      console.info("[NEW_TAB_02] frontend tab state update completed, newTabId:", newTabId);
+      console.info("[NEW_TAB_02] timestamp:", Date.now());
+      if (newTabId) {
+        console.info("[NEW_TAB_03] about to call backend createTab");
+        console.info("[NEW_TAB_03] timestamp:", Date.now());
+        browser.createTab(newTabId);
+        console.info("[NEW_TAB_03] backend createTab called");
+        console.info("[NEW_TAB_03] timestamp:", Date.now());
+      }
+    } catch (err) {
+      console.error("[NEW_TAB_XX] UNCAUGHT EXCEPTION in handleNewTab:", err);
+      console.error("[NEW_TAB_XX] timestamp:", Date.now());
     }
   }, [addTab]);
 

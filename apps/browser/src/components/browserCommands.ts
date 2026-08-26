@@ -1,19 +1,31 @@
-
 async function invoke(command: string, args?: Record<string, unknown>) {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    console.info(`[browserCommands] invoking: ${command}`, args);
+    console.info(`[NEW_TAB_04] backend invoke about to happen: ${command}`, args);
+    console.info(`[NEW_TAB_04] timestamp: ${Date.now()}`);
     const timeoutMs = command === "run_benchmark_workload" ? 180000 : 30000;
     const result = await Promise.race([
       invoke(command, args),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT: ${command} exceeded ${timeoutMs}ms`)), timeoutMs))
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`TIMEOUT: ${command} exceeded ${timeoutMs}ms`)),
+          timeoutMs,
+        ),
+      ),
     ]);
+    console.info(`[NEW_TAB_05] backend invoke resolved: ${command}`, result);
+    console.info(`[NEW_TAB_05] timestamp: ${Date.now()}`);
     return result;
   } catch (err) {
-    const errObj = err as {message?: string; name?: string; toString?: () => string} | null;
-    console.error(`[browserCommands] Command ${command} failed:`, errObj?.message || String(err), "| name:", errObj?.name, "| toString:", errObj?.toString?.());
-    if (err && typeof err === 'object') {
-      console.error(`[browserCommands] Error keys:`, Object.keys(err));
+    const errObj = err as { message?: string; name?: string; toString?: () => string } | null;
+    console.error(
+      `[NEW_TAB_05] backend invoke rejected: ${command}`,
+      errObj?.message || String(err),
+    );
+    console.error(`[NEW_TAB_05] error name:`, errObj?.name);
+    console.error(`[NEW_TAB_05] timestamp: ${Date.now()}`);
+    if (err && typeof err === "object") {
+      console.error(`[NEW_TAB_05] Error keys:`, Object.keys(err));
       for (const key of Object.keys(err as object)) {
         console.error(`  ${key}:`, (err as Record<string, unknown>)[key]);
       }
@@ -226,7 +238,6 @@ export const browser = {
     };
   },
 
-
   async runBenchmarkWorkload(params: {
     tabCount: number;
     urls: string[];
@@ -291,7 +302,6 @@ export const browser = {
 };
 
 export const browserCommands = browser;
-
 
 export interface MemorySnapshot {
   timestamp: number;
