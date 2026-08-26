@@ -63,7 +63,7 @@ fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
@@ -1312,8 +1312,8 @@ async fn navigate_browser(
     
     let tab_manager = app.state::<Mutex<TabManager>>();
     {
-        let mut tm = tab_manager.lock().unwrap();
-        let mut tabs = tm.tabs.lock().unwrap();
+        let tm = tab_manager.lock().unwrap();
+        let tabs = tm.tabs.lock().unwrap();
         let mut history = tm.history.lock().unwrap();
 
         if let Some(tab) = tabs.get(&tabId) {
@@ -1993,9 +1993,9 @@ fn create_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> 
     let tab_manager = app.state::<Mutex<TabManager>>();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-    let mut tm = tab_manager.lock().unwrap();
+    let tm = tab_manager.lock().unwrap();
     let mut tabs = tm.tabs.lock().unwrap();
-    let mut history = tm.history.lock().unwrap();
+    let history = tm.history.lock().unwrap();
 
     tabs.remove(&tabId);
 
@@ -2023,7 +2023,7 @@ fn create_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> 
 fn switch_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<String, String> {
     let tab_manager = app.state::<Mutex<TabManager>>();
     let tm = tab_manager.lock().unwrap();
-    let tabs = tm.tabs.lock().unwrap();
+    let mut tabs = tm.tabs.lock().unwrap();
     let history = tm.history.lock().unwrap();
 
     let tab = tabs.get(&tabId).ok_or("Tab not found")?;
@@ -2035,7 +2035,7 @@ fn switch_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> 
 #[tauri::command]
 fn close_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> Result<(), String> {
     let tab_manager = app.state::<Mutex<TabManager>>();
-    let mut tm = tab_manager.lock().unwrap();
+    let tm = tab_manager.lock().unwrap();
     let mut tabs = tm.tabs.lock().unwrap();
     tabs.remove(&tabId);
     Ok(())
@@ -2045,7 +2045,7 @@ fn close_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
 fn get_tab_snapshots(app: tauri::AppHandle) -> Result<Vec<TabSnapshot>, String> {
     let tab_manager = app.state::<Mutex<TabManager>>();
     let tm = tab_manager.lock().unwrap();
-    let tabs = tm.tabs.lock().unwrap();
+    let mut tabs = tm.tabs.lock().unwrap();
     let history = tm.history.lock().unwrap();
 
     let snapshots: Vec<TabSnapshot> = tabs.values()
@@ -3320,7 +3320,7 @@ fn main() {
 
             p.phase_end("setup_complete", Some("EduOS Browser ready, WebView lazy"));
 
-            
+
             let trace = p.finish();
             log::info!("[STARTUP] Setup trace: {}ms total", trace.total_ms);
             for (phase, dur) in &trace.phase_breakdown {
