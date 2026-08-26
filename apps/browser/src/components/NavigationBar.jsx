@@ -99,10 +99,19 @@ export function NavigationBar({
     e.preventDefault();
     if (urlInput.trim() && activeTabId) {
       let url = urlInput.trim();
-      // Auto-add https:// if no protocol
-      if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        url = "https://" + url;
+
+      // Check if it's a URL or search query
+      if (url.includes(".") && !url.includes(" ")) {
+        // Has a dot and no spaces - likely a URL
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+          url = "https://" + url;
+        }
+      } else {
+        // No dot or has spaces - treat as search query
+        const encodedQuery = encodeURIComponent(url);
+        url = `https://www.google.com/search?q=${encodedQuery}`;
       }
+
       onNavigate(activeTabId, url);
     }
   };

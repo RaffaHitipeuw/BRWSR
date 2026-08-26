@@ -25,6 +25,7 @@ function App() {
 
   // Track if initial WebView creation has happened
   const webViewInitialized = useRef(false);
+  const lastNavigatedUrl = useRef(null);
 
   useEffect(() => {
     if (activeTab && activeTab.url && activeTab.url.startsWith("http")) {
@@ -40,13 +41,16 @@ function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [save]);
 
-  // Only navigate on initial load to create WebView, NOT on tab switches
+  // Navigate on tab switch only if URL is different from current WebView URL
   useEffect(() => {
-    if (activeTabId && activeTab && activeTab.url && !webViewInitialized.current) {
-      webViewInitialized.current = true;
-      browser.navigate(activeTab.url, activeTabId, "initial_load");
+    if (activeTabId && activeTab && activeTab.url) {
+      // Only navigate if URL is different from last navigation
+      if (activeTab.url !== lastNavigatedUrl.current) {
+        lastNavigatedUrl.current = activeTab.url;
+        browser.navigate(activeTab.url, activeTabId, "tab_switch");
+      }
     }
-  }, [activeTabId, activeTab?.url, activeTab]);
+  }, [activeTabId, activeTab]);
 
   const handleTabClick = useCallback(
     (tabId) => {
