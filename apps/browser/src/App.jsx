@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   TabBar,
   NavigationBar,
@@ -23,6 +23,9 @@ function App() {
   const addToHistory = useHistoryStore((s) => s.addItem);
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
+  // Track if initial WebView creation has happened
+  const webViewInitialized = useRef(false);
+
   useEffect(() => {
     if (activeTab && activeTab.url && activeTab.url.startsWith("http")) {
       addToHistory(activeTab.url, activeTab.title, activeTab.favicon || null);
@@ -37,9 +40,11 @@ function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [save]);
 
+  // Only navigate on initial load to create WebView, NOT on tab switches
   useEffect(() => {
-    if (activeTabId && activeTab && activeTab.url) {
-      browser.navigate(activeTab.url, activeTabId, "tab_switch");
+    if (activeTabId && activeTab && activeTab.url && !webViewInitialized.current) {
+      webViewInitialized.current = true;
+      browser.navigate(activeTab.url, activeTabId, "initial_load");
     }
   }, [activeTabId, activeTab?.url, activeTab]);
 

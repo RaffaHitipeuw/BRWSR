@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTabStore } from "../stores/tabs";
 import { useBookmarksStore } from "../stores/bookmarks";
 
@@ -48,10 +48,19 @@ export function NavigationBar({
   onNewTab,
 }) {
   const [showMenu, setShowMenu] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const inputRef = useRef(null);
 
   const activeTabId = useTabStore((s) => s.activeTabId);
   const tabs = useTabStore((s) => s.tabs);
   const activeTab = tabs.find((t) => t.id === activeTabId);
+
+  // Sync input with active tab URL
+  useEffect(() => {
+    if (activeTab?.url && !inputRef.current?.focused) {
+      setUrlInput(activeTab.url);
+    }
+  }, [activeTab?.url]);
 
   const addBookmark = useBookmarksStore((s) => s.addBookmark);
   const isBookmarked = useBookmarksStore((s) => s.isBookmarked);
@@ -84,6 +93,24 @@ export function NavigationBar({
       onNavigate(activeTab?.id, url);
     }
     setShowMenu(false);
+  };
+
+  const handleUrlSubmit = (e) => {
+    e.preventDefault();
+    if (urlInput.trim() && activeTabId) {
+      let url = urlInput.trim();
+      // Auto-add https:// if no protocol
+      if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        url = "https://" + url;
+      }
+      onNavigate(activeTabId, url);
+    }
+  };
+
+  const handleInputFocus = () => {
+    if (inputRef.current) {
+      inputRef.current.select();
+    }
   };
 
   return (
@@ -126,30 +153,38 @@ export function NavigationBar({
 
         {/* Address Bar */}
         <div className="flex-1 mx-2">
-          <div
-            className={clsx(
-              "flex items-center h-9 px-3 rounded-full bg-white border transition-all",
-              activeTab?.isLoading ? "border-blue-500" : "border-gray-200 hover:border-gray-300"
-            )}
-          >
-            <div className="flex-shrink-0 mr-2">
-              {currentUrl.startsWith("https://") ? (
-                <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
+          <form onSubmit={handleUrlSubmit}>
+            <div
+              className={clsx(
+                "flex items-center h-9 px-3 rounded-full bg-white border transition-all",
+                activeTab?.isLoading ? "border-blue-500" : "border-gray-200 hover:border-gray-300 focus-within:border-blue-500"
+              )}
+            >
+              <div className="flex-shrink-0 mr-2">
+                {currentUrl.startsWith("https://") ? (
+                  <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                )}
+              </div>
+              <input
+                ref={inputRef}
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onFocus={handleInputFocus}
+                placeholder="Search or enter URL"
+                className="flex-1 text-sm text-gray-800 bg-transparent outline-none"
+              />
+              {activeTab?.isLoading && (
+                <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin ml-2" />
               )}
             </div>
-            <span className="flex-1 text-sm text-gray-800 truncate">
-              {currentUrl || "New Tab"}
-            </span>
-            {activeTab?.isLoading && (
-              <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
-            )}
-          </div>
+          </form>
         </div>
       </div>
 
