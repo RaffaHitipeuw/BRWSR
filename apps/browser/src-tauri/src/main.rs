@@ -3425,16 +3425,28 @@ fn main() {
 
             let resize_handle = handle.clone();
             main_window.on_window_event(move |event| match event {
+                // On resize or move: sync layout AND raise browser to maintain z-order.
+                // This catches dragging the title bar, resizing edges, and maximize/restore.
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                    if let Some(browser) = resize_handle.get_webview_window("browser") {
+                        let _ = browser.show();
+                        raise_window_without_activation(&browser);
+                    }
                     sync_browser_layout(&resize_handle);
                 }
+                // On focus gained: ensure browser is visible and at correct z-order.
+                // SWP_NOACTIVATE keeps main window as keyboard focus target.
                 tauri::WindowEvent::Focused(true) => {
-                    // Raise browser window to visible z-order without stealing focus.
-                    // SetWindowPos with SWP_NOACTIVATE keeps main window as keyboard focus target.
                     if let Some(browser) = resize_handle.get_webview_window("browser") {
                         let _ = browser.show();
                         raise_window_without_activation(&browser);
                         sync_browser_layout(&resize_handle);
+                    }
+                }
+                // On close: close browser window first, then allow main window to close.
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if let Some(browser) = resize_handle.get_webview_window("browser") {
+                        let _ = browser.close();
                     }
                 }
                 _ => {}
