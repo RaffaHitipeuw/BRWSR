@@ -1232,7 +1232,7 @@ async fn navigate_browser(
 
         p.phase_start("webview_builder_create");
         log::info!("[NEW_TAB_14] creating WebviewWindowBuilder");
-        match WebviewWindowBuilder::new(&handle, "browser", webview_url)
+        let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
             .title("EduOS Browser")
             .position(pos_x, pos_y)
             .inner_size(size_w, size_h)
@@ -1240,40 +1240,32 @@ async fn navigate_browser(
             .resizable(false)
             .skip_taskbar(true)
             .visible(true)
-            .focused(true)
-            .parent(&main_window)
-        {
-            Ok(builder) => {
-                log::info!("[NEW_TAB_14] builder created successfully");
-                p.phase_end("webview_builder_create", Some("builder created"));
+            .focused(true);
 
-                p.phase_start("webview_build");
-                log::info!("[NEW_TAB_15] about to call builder.build()");
-                match builder.build() {
-                    Ok(browser_win) => {
-                        log::info!("[NEW_TAB_15] SUCCESS: builder.build() succeeded");
-                        p.phase_end("webview_build", Some("WebView built successfully"));
+        log::info!("[NEW_TAB_14] builder created, calling build()");
+        p.phase_end("webview_builder_create", Some("builder created"));
 
-                        disable_main_window_rounded_corners(&browser_win);
-                        lifecycle.mark_active();
-                        log::info!("[NEW_TAB_16] lifecycle state updated to active");
+        p.phase_start("webview_build");
+        log::info!("[NEW_TAB_15] about to call builder.build()");
+        match builder.build() {
+            Ok(browser_win) => {
+                log::info!("[NEW_TAB_15] SUCCESS: builder.build() succeeded");
+                p.phase_end("webview_build", Some("WebView built successfully"));
 
-                        sync_browser_layout(&handle);
+                disable_main_window_rounded_corners(&browser_win);
+                lifecycle.mark_active();
+                log::info!("[NEW_TAB_16] lifecycle state updated to active");
 
-                        let trace = p.finish();
-                        log::info!("[WEBVIEW] WebView created in {}ms total", trace.total_ms);
-                        for (phase, dur) in &trace.phase_breakdown {
-                            log::info!("[WEBVIEW]   {}: {}ms", phase, dur);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[NEW_TAB_15] FAILED: builder.build() error: {}", e);
-                        return Err(format!("Failed to create WebView: {}", e));
-                    }
+                sync_browser_layout(&handle);
+
+                let trace = p.finish();
+                log::info!("[WEBVIEW] WebView created in {}ms total", trace.total_ms);
+                for (phase, dur) in &trace.phase_breakdown {
+                    log::info!("[WEBVIEW]   {}: {}ms", phase, dur);
                 }
             }
             Err(e) => {
-                log::error!("[NEW_TAB_14] FAILED: WebviewWindowBuilder error: {}", e);
+                log::error!("[NEW_TAB_15] FAILED: builder.build() error: {}", e);
                 return Err(format!("Failed to create WebView: {}", e));
             }
         }
@@ -1497,7 +1489,7 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         Err(_) => WebviewUrl::App("about:blank".into()),
     };
 
-    match WebviewWindowBuilder::new(&handle, "browser", webview_url)
+    let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
         .title("EduOS Browser")
         .position(pos_x, pos_y)
         .inner_size(size_w, size_h)
@@ -1505,25 +1497,18 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         .resizable(false)
         .skip_taskbar(true)
         .visible(true)
-        .focused(true)
-        .parent(&main_window)
-    {
-        Ok(builder) => match builder.build() {
-            Ok(browser_win) => {
-                
-                disable_main_window_rounded_corners(&browser_win);
-                lifecycle.mark_active();
-                log::info!("WebView restored: {}", url_to_load);
-                Ok(true) 
-            }
-            Err(e) => {
-                log::error!("Failed to restore WebView: {}", e);
-                Err(format!("Failed to restore WebView: {}", e))
-            }
-        },
+        .focused(true);
+
+    match builder.build() {
+        Ok(browser_win) => {
+            disable_main_window_rounded_corners(&browser_win);
+            lifecycle.mark_active();
+            log::info!("WebView restored: {}", url_to_load);
+            Ok(true)
+        }
         Err(e) => {
-            log::error!("Failed to create WebView builder: {}", e);
-            Err(format!("Failed to create WebView: {}", e))
+            log::error!("Failed to restore WebView: {}", e);
+            Err(format!("Failed to restore WebView: {}", e))
         }
     }
 }
@@ -1903,7 +1888,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         Err(_) => WebviewUrl::App("about:blank".into()),
     };
 
-    match WebviewWindowBuilder::new(&handle, "browser", webview_url)
+    let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
         .title("EduOS Browser")
         .position(pos_x, pos_y)
         .inner_size(size_w, size_h)
@@ -1911,73 +1896,48 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         .resizable(false)
         .skip_taskbar(true)
         .visible(true)
-        .focused(true)
-        .parent(&main_window)
-    {
-        Ok(builder) => match builder.build() {
-            Ok(browser_win) => {
-                
-                disable_main_window_rounded_corners(&browser_win);
-                lifecycle.mark_active();
-                *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
-                *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
+        .focused(true);
 
-                log::info!("Tab {} restored from evicted state", tabId);
+    match builder.build() {
+        Ok(browser_win) => {
 
-                
-                sys.refresh_all();
-                let process_after = capture_process_state(&sys);
+            disable_main_window_rounded_corners(&browser_win);
+            lifecycle.mark_active();
+            *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
+            *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
 
-                
-                let restore_completed_event = LifecycleEvent::new(
-                    format!("rst-cmp-{}-{}", tabId, next_event_sequence()),
-                    next_event_sequence(),
-                    LifecycleEventType::RestoreCompleted,
-                    tabId.clone(),
-                    previous_state_str.to_string(),
-                    "active".to_string(),
-                    pressure_level.to_string(),
-                    format!("Restore completed for {} to {}", tabId, url_to_load),
-                    process_before,
-                    process_after,
-                    true,
-                );
-                emit_lifecycle_event(&app, restore_completed_event);
+            log::info!("Tab {} restored from evicted state", tabId);
 
-                Ok(TabLifecycleInfo {
-                    tab_id: tabId,
-                    lifecycle_state: "restoring".to_string(),
-                    estimated_memory_mb: 50.0,
-                    can_suspend: true,
-                    can_evict: true,
-                })
-            }
-            Err(e) => {
-                
-                sys.refresh_all();
-                let process_after = capture_process_state(&sys);
 
-                let event = LifecycleEvent::new(
-                    format!("rst-fail-{}-{}", tabId, next_event_sequence()),
-                    next_event_sequence(),
-                    LifecycleEventType::RestoreFailed,
-                    tabId.clone(),
-                    previous_state_str.to_string(),
-                    previous_state_str.to_string(),
-                    pressure_level.to_string(),
-                    format!("Restore failed: {}", e),
-                    process_before,
-                    process_after,
-                    false,
-                );
-                emit_lifecycle_event(&app, event);
+            sys.refresh_all();
+            let process_after = capture_process_state(&sys);
 
-                log::error!("Failed to restore tab: {}", e);
-                Err(format!("Failed to restore tab: {}", e))
-            }
-        },
+
+            let restore_completed_event = LifecycleEvent::new(
+                format!("rst-cmp-{}-{}", tabId, next_event_sequence()),
+                next_event_sequence(),
+                LifecycleEventType::RestoreCompleted,
+                tabId.clone(),
+                previous_state_str.to_string(),
+                "active".to_string(),
+                pressure_level.to_string(),
+                format!("Restore completed for {} to {}", tabId, url_to_load),
+                process_before,
+                process_after,
+                true,
+            );
+            emit_lifecycle_event(&app, restore_completed_event);
+
+            Ok(TabLifecycleInfo {
+                tab_id: tabId,
+                lifecycle_state: "restoring".to_string(),
+                estimated_memory_mb: 50.0,
+                can_suspend: true,
+                can_evict: true,
+            })
+        }
         Err(e) => {
-            
+
             sys.refresh_all();
             let process_after = capture_process_state(&sys);
 
@@ -1996,7 +1956,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
             );
             emit_lifecycle_event(&app, event);
 
-            log::error!("Failed to create WebView builder: {}", e);
+            log::error!("Failed to restore tab: {}", e);
             Err(format!("Failed to restore tab: {}", e))
         }
     }
@@ -3417,14 +3377,15 @@ fn main() {
             disable_main_window_rounded_corners(&main_window);
 
             p.phase_start("window_event_listeners");
-            
+
             let resize_handle = handle.clone();
             main_window.on_window_event(move |event| match event {
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
                     sync_browser_layout(&resize_handle);
                 }
                 tauri::WindowEvent::Focused(true) => {
-                    
+                    // Show browser window when main window gains focus.
+                    // Browser is a sibling now, so we need to show it explicitly.
                     if let Some(browser) = resize_handle.get_webview_window("browser") {
                         let _ = browser.show();
                         sync_browser_layout(&resize_handle);
