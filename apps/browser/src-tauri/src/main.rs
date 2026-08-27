@@ -24,6 +24,51 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+/// Raise a window to the top of z-order WITHOUT activating it or stealing keyboard focus.
+/// Uses SetWindowPos with SWP_NOACTIVATE to change z-order while preserving focus.
+#[cfg(target_os = "windows")]
+fn raise_window_without_activation(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
+    };
+
+    // Get the raw HWND from the WebviewWindow
+    let hwnd_raw = match window.hwnd() {
+        Ok(h) => h.0,
+        Err(e) => {
+            log::warn!("[ZORDER] Failed to get HWND: {}", e);
+            return;
+        }
+    };
+
+    // Create wrapped HWND type
+    let hwnd = HWND(hwnd_raw);
+
+    // SWP_NOACTIVATE: Do not activate the window
+    // SWP_NOMOVE: Retain current position
+    // SWP_NOSIZE: Retain current size
+    // HWND_TOP wrapped in Some: Place window at top of z-order
+    unsafe {
+        if let Err(e) = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        ) {
+            log::warn!("[ZORDER] SetWindowPos failed: {:?}", e);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn raise_window_without_activation(_window: &tauri::WebviewWindow) {
+    // No-op on non-Windows platforms
+}
+
 /// Disable Windows 11 DWM rounded corners on the main Tauri window only.
 /// Uses DwmSetWindowAttribute with DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND.
 /// Does NOT modify WebView2 child HWNDs.
@@ -3384,10 +3429,11 @@ fn main() {
                     sync_browser_layout(&resize_handle);
                 }
                 tauri::WindowEvent::Focused(true) => {
-                    // Show browser window when main window gains focus.
-                    // Browser is a sibling now, so we need to show it explicitly.
+                    // Raise browser window to visible z-order without stealing focus.
+                    // SetWindowPos with SWP_NOACTIVATE keeps main window as keyboard focus target.
                     if let Some(browser) = resize_handle.get_webview_window("browser") {
                         let _ = browser.show();
+                        raise_window_without_activation(&browser);
                         sync_browser_layout(&resize_handle);
                     }
                 }
