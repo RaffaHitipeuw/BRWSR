@@ -24,16 +24,164 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Z-ORDER: Win32 Window Subclass for synchronous non-client mouse interception
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Message IDs we intercept to detect non-client activity that drops sibling z-order.
+#[cfg(target_os = "windows")]
+const ZORDER_TRIGGER_MESSAGES: &[u32] = &[
+    0x00A1, // WM_NCLBUTTONDOWN
+    0x00A3, // WM_NCRBUTTONDOWN
+    0x00A4, // WM_NCMBUTTONDOWN
+    0x0231, // WM_NCMOUSEHOVER
+    0x02A0, // WM_NCMOUSEMOVE
+    0x0046, // WM_WINDOWPOSCHANGING
+    0x0086, // WM_WINDOWPOSCHANGED
+    0x0006, // WM_ENTERSIZEMOVE
+];
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallWindowProcW, DefWindowProcW, SetWindowLongPtrW, SetWindowPos, GWL_WNDPROC,
+    HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, WM_DESTROY, WM_NCDESTROY, WNDPROC,
+};
+
+// Thread-local: stores the original WNDPROC as a raw isize (Send + Sync).
+#[cfg(target_os = "windows")]
+thread_local! {
+    static SUBCLASS_ORIGINAL_WNDPROC: std::cell::RefCell<Option<isize>> =
+        std::cell::RefCell::new(None);
+}
+
+// Global: browser window HWND stored as raw isize (HWND doesn't impl Sync).
+#[cfg(target_os = "windows")]
+static BROWSER_HWND_RAW: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
+
+/// Raise the browser window to top of z-order using SetWindowPos + SWP_NOACTIVATE.
+/// Called synchronously from the WNDPROC on every non-client mouse / size-move message.
+#[cfg(target_os = "windows")]
+unsafe fn raise_browser_window_unsafe() {
+    if let Ok(guard) = BROWSER_HWND_RAW.lock() {
+        if let Some(raw) = *guard {
+            let browser_hwnd = HWND(raw as *mut _);
+            let _ = SetWindowPos(
+                browser_hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+/// WNDPROC callback for the subclassed main window.
+/// Intercepts non-client mouse and window-move messages synchronously (before
+/// Tauri's event loop, before JavaScript's onMouseDown) and re-asserts the
+/// browser sibling's z-order with SetWindowPos + SWP_NOACTIVATE.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn main_window_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_DESTROY | WM_NCDESTROY => {
+            // Restore original WNDPROC before window is destroyed.
+            let orig = SUBCLASS_ORIGINAL_WNDPROC.with(|cell| {
+                let v = *cell.borrow();
+                v
+            });
+            if let Some(ptr) = orig {
+                let _ = SetWindowLongPtrW(hwnd, GWL_WNDPROC, ptr);
+            }
+            // Clear subclass state so we don't forward to a dead window.
+            SUBCLASS_ORIGINAL_WNDPROC.with(|cell| cell.borrow_mut().take());
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        _ if ZORDER_TRIGGER_MESSAGES.contains(&msg) => {
+            raise_browser_window_unsafe();
+        }
+        _ => {}
+    }
+    // Forward to original WNDPROC.
+    SUBCLASS_ORIGINAL_WNDPROC.with(|cell| {
+        let ptr_opt = *cell.borrow();
+        if let Some(ptr) = ptr_opt {
+            // Cast raw isize back to the WNDPROC function pointer type.
+            let orig_fn: WNDPROC = Some(std::mem::transmute(ptr));
+            CallWindowProcW(orig_fn, hwnd, msg, wparam, lparam)
+        } else {
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+    })
+}
+
+/// Install a WNDPROC subclass on the main window. This synchronously intercepts
+/// all Windows messages before Tauri/React sees them, eliminating the async-IPC
+/// race condition that caused z-order drops on drag-region clicks.
+#[cfg(target_os = "windows")]
+fn setup_main_window_subclass(
+    main_window: &tauri::WebviewWindow,
+    browser_window: &tauri::WebviewWindow,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
+
+    let main_hwnd = HWND(
+        main_window.hwnd().map_err(|e| {
+            log::error!("[ZORDER-SUBCLASS] main HWND: {}", e);
+        }).ok().map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+    );
+
+    let browser_raw = browser_window.hwnd().map_err(|e| {
+        log::error!("[ZORDER-SUBCLASS] browser HWND: {}", e);
+    }).ok().map(|h| h.0 as isize);
+
+    if let Some(raw) = browser_raw {
+        if let Ok(mut guard) = BROWSER_HWND_RAW.lock() {
+            *guard = Some(raw);
+        }
+    }
+
+    let original_wndproc = unsafe { GetWindowLongPtrW(main_hwnd, GWL_WNDPROC) };
+    if original_wndproc == 0 {
+        log::error!("[ZORDER-SUBCLASS] GetWindowLongPtrW failed");
+        return;
+    }
+
+    SUBCLASS_ORIGINAL_WNDPROC.with(|cell| *cell.borrow_mut() = Some(original_wndproc));
+
+    let result = unsafe {
+        SetWindowLongPtrW(main_hwnd, GWL_WNDPROC, main_window_wndproc as usize as isize)
+    };
+    if result == 0 {
+        log::error!("[ZORDER-SUBCLASS] SetWindowLongPtrW failed");
+    } else {
+        log::info!(
+            "[ZORDER-SUBCLASS] Installed on main HWND (browser raw: {:?})",
+            browser_raw
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn setup_main_window_subclass(
+    _main_window: &tauri::WebviewWindow,
+    _browser_window: &tauri::WebviewWindow,
+) {
+    // No-op on non-Windows.
+}
+
 /// Raise a window to the top of z-order WITHOUT activating it or stealing keyboard focus.
 /// Uses SetWindowPos with SWP_NOACTIVATE to change z-order while preserving focus.
 #[cfg(target_os = "windows")]
 fn raise_window_without_activation(window: &tauri::WebviewWindow) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
-    };
-
-    // Get the raw HWND from the WebviewWindow
     let hwnd_raw = match window.hwnd() {
         Ok(h) => h.0,
         Err(e) => {
@@ -41,22 +189,12 @@ fn raise_window_without_activation(window: &tauri::WebviewWindow) {
             return;
         }
     };
-
-    // Create wrapped HWND type
     let hwnd = HWND(hwnd_raw);
-
-    // SWP_NOACTIVATE: Do not activate the window
-    // SWP_NOMOVE: Retain current position
-    // SWP_NOSIZE: Retain current size
-    // HWND_TOP wrapped in Some: Place window at top of z-order
     unsafe {
         if let Err(e) = SetWindowPos(
             hwnd,
             Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
+            0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         ) {
             log::warn!("[ZORDER] SetWindowPos failed: {:?}", e);
@@ -65,9 +203,7 @@ fn raise_window_without_activation(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn raise_window_without_activation(_window: &tauri::WebviewWindow) {
-    // No-op on non-Windows platforms
-}
+fn raise_window_without_activation(_window: &tauri::WebviewWindow) {}
 
 /// Disable Windows 11 DWM rounded corners on the main Tauri window only.
 /// Uses DwmSetWindowAttribute with DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND.
@@ -3432,6 +3568,15 @@ fn main() {
 
             
             disable_main_window_rounded_corners(&main_window);
+
+            // Install Win32 WNDPROC subclass on main window BEFORE any event listeners.
+            // This synchronously intercepts WM_NCLBUTTONDOWN, WM_MOVING, etc. and
+            // raises the browser window in the same Windows message dispatch —
+            // eliminating the async-IPC race condition that caused z-order drops
+            // when clicking drag-region areas.
+            if let Some(browser_window) = handle.get_webview_window("browser") {
+                setup_main_window_subclass(&main_window, &browser_window);
+            }
 
             p.phase_start("window_event_listeners");
 
