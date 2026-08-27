@@ -3,6 +3,10 @@ import { clsx } from "clsx";
 import { useTabStore } from "../stores/tabs";
 import { browserCommands } from "./browserCommands";
 
+const handleTabStripClick = () => {
+  browserCommands.raiseBrowserZorder();
+};
+
 export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   const tabs = useTabStore((s) => s.tabs);
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -62,7 +66,11 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   const unpinnedTabs = tabs.filter((t) => !t.isPinned);
 
   return (
-    <div className="flex items-center bg-[#2d2d2d] h-10 select-none" data-tauri-drag-region>
+    <div
+      className="flex items-center bg-[#2d2d2d] h-10 select-none"
+      data-tauri-drag-region
+      onMouseDown={handleTabStripClick}
+    >
       <div className="h-full flex items-center">
         <button
           onClick={handleMinimize}

@@ -1207,6 +1207,17 @@ fn close_window(app: tauri::AppHandle) -> Result<(), String> {
     main.close().map_err(|e| e.to_string())
 }
 
+/// Raise browser window to correct z-order without stealing keyboard focus.
+/// Called from frontend when clicking tab strip or other non-interactive areas.
+#[tauri::command]
+fn raise_browser_zorder(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(browser) = app.get_webview_window("browser") {
+        let _ = browser.show();
+        raise_window_without_activation(&browser);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -3317,6 +3328,7 @@ fn main() {
             minimize_window,
             toggle_maximize,
             close_window,
+            raise_browser_zorder,
             get_app_version,
             is_benchmark_mode,
             exit_app,

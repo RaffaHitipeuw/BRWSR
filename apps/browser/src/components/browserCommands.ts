@@ -63,6 +63,10 @@ export const browser = {
     return await invoke("toggle_maximize");
   },
 
+  async raiseBrowserZorder() {
+    return await invoke("raise_browser_zorder");
+  },
+
   async close() {
     return await invoke("close_window");
   },
