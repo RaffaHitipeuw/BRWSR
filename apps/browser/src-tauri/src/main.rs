@@ -1317,7 +1317,9 @@ fn toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
     } else {
         main.maximize().map_err(|e| e.to_string())?;
     }
-    sync_browser_layout(&app);
+    // NOTE: sync_browser_layout is NOT called here. WindowEvent::Resized fires after
+    // animation completes with final size and calls sync_browser_layout() itself. Calling it here
+    // would race: this call (intermediate size) races with Resized (final size).
     Ok(())
 }
 
