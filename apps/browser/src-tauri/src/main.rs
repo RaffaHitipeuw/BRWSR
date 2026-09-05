@@ -24,186 +24,11 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Z-ORDER: Win32 Window Subclass for synchronous non-client mouse interception
-// ─────────────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Browser window management
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/// Message IDs we intercept to detect non-client activity that drops sibling z-order.
-#[cfg(target_os = "windows")]
-const ZORDER_TRIGGER_MESSAGES: &[u32] = &[
-    0x00A1, // WM_NCLBUTTONDOWN
-    0x00A3, // WM_NCRBUTTONDOWN
-    0x00A4, // WM_NCMBUTTONDOWN
-    0x0231, // WM_NCMOUSEHOVER
-    0x02A0, // WM_NCMOUSEMOVE
-    0x0046, // WM_WINDOWPOSCHANGING
-    0x0086, // WM_WINDOWPOSCHANGED
-    0x0006, // WM_ENTERSIZEMOVE
-];
 
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, DefWindowProcW, SetWindowLongPtrW, SetWindowPos, GWL_WNDPROC,
-    HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, WM_DESTROY, WM_NCDESTROY, WNDPROC,
-};
-
-// Thread-local: stores the original WNDPROC as a raw isize (Send + Sync).
-#[cfg(target_os = "windows")]
-thread_local! {
-    static SUBCLASS_ORIGINAL_WNDPROC: std::cell::RefCell<Option<isize>> =
-        std::cell::RefCell::new(None);
-}
-
-// Global: browser window HWND stored as raw isize (HWND doesn't impl Sync).
-#[cfg(target_os = "windows")]
-static BROWSER_HWND_RAW: std::sync::Mutex<Option<isize>> = std::sync::Mutex::new(None);
-
-/// Raise the browser window to top of z-order using SetWindowPos + SWP_NOACTIVATE.
-/// Called synchronously from the WNDPROC on every non-client mouse / size-move message.
-#[cfg(target_os = "windows")]
-unsafe fn raise_browser_window_unsafe() {
-    if let Ok(guard) = BROWSER_HWND_RAW.lock() {
-        if let Some(raw) = *guard {
-            let browser_hwnd = HWND(raw as *mut _);
-            let _ = SetWindowPos(
-                browser_hwnd,
-                Some(HWND_TOP),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-        }
-    }
-}
-
-/// WNDPROC callback for the subclassed main window.
-/// Intercepts non-client mouse and window-move messages synchronously (before
-/// Tauri's event loop, before JavaScript's onMouseDown) and re-asserts the
-/// browser sibling's z-order with SetWindowPos + SWP_NOACTIVATE.
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn main_window_wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_DESTROY | WM_NCDESTROY => {
-            // Restore original WNDPROC before window is destroyed.
-            let orig = SUBCLASS_ORIGINAL_WNDPROC.with(|cell| {
-                let v = *cell.borrow();
-                v
-            });
-            if let Some(ptr) = orig {
-                let _ = SetWindowLongPtrW(hwnd, GWL_WNDPROC, ptr);
-            }
-            // Clear subclass state so we don't forward to a dead window.
-            SUBCLASS_ORIGINAL_WNDPROC.with(|cell| cell.borrow_mut().take());
-            return DefWindowProcW(hwnd, msg, wparam, lparam);
-        }
-        _ if ZORDER_TRIGGER_MESSAGES.contains(&msg) => {
-            raise_browser_window_unsafe();
-        }
-        _ => {}
-    }
-    // Forward to original WNDPROC.
-    SUBCLASS_ORIGINAL_WNDPROC.with(|cell| {
-        let ptr_opt = *cell.borrow();
-        if let Some(ptr) = ptr_opt {
-            // Cast raw isize back to the WNDPROC function pointer type.
-            let orig_fn: WNDPROC = Some(std::mem::transmute(ptr));
-            CallWindowProcW(orig_fn, hwnd, msg, wparam, lparam)
-        } else {
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-    })
-}
-
-/// Install a WNDPROC subclass on the main window. This synchronously intercepts
-/// all Windows messages before Tauri/React sees them, eliminating the async-IPC
-/// race condition that caused z-order drops on drag-region clicks.
-#[cfg(target_os = "windows")]
-fn setup_main_window_subclass(
-    main_window: &tauri::WebviewWindow,
-    browser_window: &tauri::WebviewWindow,
-) {
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
-
-    let main_hwnd = HWND(
-        main_window.hwnd().map_err(|e| {
-            log::error!("[ZORDER-SUBCLASS] main HWND: {}", e);
-        }).ok().map(|h| h.0).unwrap_or(std::ptr::null_mut()),
-    );
-
-    let browser_raw = browser_window.hwnd().map_err(|e| {
-        log::error!("[ZORDER-SUBCLASS] browser HWND: {}", e);
-    }).ok().map(|h| h.0 as isize);
-
-    if let Some(raw) = browser_raw {
-        if let Ok(mut guard) = BROWSER_HWND_RAW.lock() {
-            *guard = Some(raw);
-        }
-    }
-
-    let original_wndproc = unsafe { GetWindowLongPtrW(main_hwnd, GWL_WNDPROC) };
-    if original_wndproc == 0 {
-        log::error!("[ZORDER-SUBCLASS] GetWindowLongPtrW failed");
-        return;
-    }
-
-    SUBCLASS_ORIGINAL_WNDPROC.with(|cell| *cell.borrow_mut() = Some(original_wndproc));
-
-    let result = unsafe {
-        SetWindowLongPtrW(main_hwnd, GWL_WNDPROC, main_window_wndproc as usize as isize)
-    };
-    if result == 0 {
-        log::error!("[ZORDER-SUBCLASS] SetWindowLongPtrW failed");
-    } else {
-        log::info!(
-            "[ZORDER-SUBCLASS] Installed on main HWND (browser raw: {:?})",
-            browser_raw
-        );
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn setup_main_window_subclass(
-    _main_window: &tauri::WebviewWindow,
-    _browser_window: &tauri::WebviewWindow,
-) {
-    // No-op on non-Windows.
-}
-
-/// Raise a window to the top of z-order WITHOUT activating it or stealing keyboard focus.
-/// Uses SetWindowPos with SWP_NOACTIVATE to change z-order while preserving focus.
-#[cfg(target_os = "windows")]
-fn raise_window_without_activation(window: &tauri::WebviewWindow) {
-    let hwnd_raw = match window.hwnd() {
-        Ok(h) => h.0,
-        Err(e) => {
-            log::warn!("[ZORDER] Failed to get HWND: {}", e);
-            return;
-        }
-    };
-    let hwnd = HWND(hwnd_raw);
-    unsafe {
-        if let Err(e) = SetWindowPos(
-            hwnd,
-            Some(HWND_TOP),
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        ) {
-            log::warn!("[ZORDER] SetWindowPos failed: {:?}", e);
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn raise_window_without_activation(_window: &tauri::WebviewWindow) {}
 
 /// Disable Windows 11 DWM rounded corners on the main Tauri window only.
 /// Uses DwmSetWindowAttribute with DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND.
@@ -248,10 +73,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
-use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    Emitter, LogicalPosition, LogicalSize, Manager, Rect, Webview, WebviewUrl, WebviewWindowBuilder,
+};
 
 mod startup_profiler;
-use startup_profiler::{StartupEvent, StartupProfiler, StartupTrace};
+use startup_profiler::StartupProfiler;
 
 
 
@@ -261,47 +88,6 @@ const HOMEPAGE: &str = "https://www.google.com";
 
 const TEMPORAL_GAP_THRESHOLD_MS: u64 = 300_000; 
 const MIN_SEQUENCE_SIZE: usize = 2; 
-
-
-
-struct BrowserGeometry {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-fn compute_browser_geometry(
-    main_pos: PhysicalPosition<i32>,
-    main_size: PhysicalSize<u32>,
-    scale: f64,
-) -> BrowserGeometry {
-    let ui_height_px = (UI_HEIGHT * scale).round() as i32;
-    BrowserGeometry {
-        x: main_pos.x,
-        y: main_pos.y + ui_height_px,
-        width: main_size.width - 18,
-        height: ((main_size.height as i32) - ui_height_px).max(1) as u32,
-    }
-}
-
-fn sync_browser_layout(app: &tauri::AppHandle) {
-    let (Some(main), Some(browser)) = (
-        app.get_webview_window("main"),
-        app.get_webview_window("browser"),
-    ) else {
-        return;
-    };
-
-    let Ok(pos) = main.outer_position() else { return };
-    let Ok(size) = main.outer_size() else { return };
-    let scale = main.scale_factor().unwrap_or(1.0);
-
-    let geo = compute_browser_geometry(pos, size, scale);
-    let _ = browser.set_position(PhysicalPosition::new(geo.x, geo.y));
-    let _ = browser.set_size(PhysicalSize::new(geo.width, geo.height));
-}
-
 
 
 
@@ -667,6 +453,21 @@ impl WebViewLifecycle {
 
     fn set_idle_threshold(&self, seconds: u64) {
         *self.idle_threshold_secs.lock().unwrap() = seconds;
+    }
+}
+
+/// Holds the browser child WebView handle.
+/// Created via `Window::add_child` as a direct child of the main window,
+/// so it has no separate native top-level window.
+struct BrowserWebview {
+    webview: Mutex<Option<Webview>>,
+}
+
+impl Default for BrowserWebview {
+    fn default() -> Self {
+        Self {
+            webview: Mutex::new(None),
+        }
     }
 }
 
@@ -1302,9 +1103,6 @@ impl Default for CachedSystem {
 fn minimize_window(app: tauri::AppHandle) -> Result<(), String> {
     let main = app.get_webview_window("main").ok_or("Window not found")?;
     main.minimize().map_err(|e| e.to_string())?;
-    if let Some(browser) = app.get_webview_window("browser") {
-        let _ = browser.hide();
-    }
     Ok(())
 }
 
@@ -1317,7 +1115,6 @@ fn toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
     } else {
         main.maximize().map_err(|e| e.to_string())?;
     }
-    sync_browser_layout(&app);
     Ok(())
 }
 
@@ -1335,23 +1132,8 @@ fn close_window(app: tauri::AppHandle) -> Result<(), String> {
     let lifecycle = app.state::<WebViewLifecycle>();
     lifecycle.set_destroyed();
 
-    if let Some(browser) = app.get_webview_window("browser") {
-        let _ = browser.close();
-    }
-
     let main = app.get_webview_window("main").ok_or("Window not found")?;
     main.close().map_err(|e| e.to_string())
-}
-
-/// Raise browser window to correct z-order without stealing keyboard focus.
-/// Called from frontend when clicking tab strip or other non-interactive areas.
-#[tauri::command]
-fn raise_browser_zorder(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(browser) = app.get_webview_window("browser") {
-        let _ = browser.show();
-        raise_window_without_activation(&browser);
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -1370,154 +1152,91 @@ async fn navigate_browser(
     #[allow(non_snake_case)]
     navigationType: String,
 ) -> Result<(), String> {
-    log::info!("[NEW_TAB_10] navigate_browser command entered");
-    log::info!("[NEW_TAB_10] url: {}, tabId: {}, navigationType: {}", url, tabId, navigationType);
-    log::info!("[NEW_TAB_10] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
-
     let lifecycle = app.state::<WebViewLifecycle>();
-    let current_state = lifecycle.get_state();
-    let needs_creation = current_state == WebViewState::Uninitialized
-        || current_state == WebViewState::Destroyed;
+    let browser_state = app.state::<BrowserWebview>();
 
-    log::info!("[NEW_TAB_11] current lifecycle state: {:?}", current_state);
-    log::info!("[NEW_TAB_11] needs_creation: {}", needs_creation);
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_size = main_window.inner_size()
+        .map_err(|e| format!("Failed to get main window size: {}", e))?;
+    let scale = main_window.scale_factor()
+        .map_err(|e| format!("Failed to get scale factor: {}", e))?;
 
-    let profiler = app.state::<Mutex<StartupProfiler>>();
+    // Calculate browser child bounds in the main window's client area.
+    // Browser occupies: x=0, y=UI_HEIGHT, width=main_width, height=main_height-UI_HEIGHT.
+    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
+    let browser_bounds = Rect {
+        position: LogicalPosition::new(0.0, UI_HEIGHT).into(),
+        size: LogicalSize::new(main_size.width as f64, browser_height as f64).into(),
+    };
 
-    if needs_creation {
-
-        let mut p = profiler.lock().map_err(|e| format!("Profiler lock failed: {}", e))?;
-        p.phase_start("webview_checking_geometry");
-
-
-        let handle = app.app_handle().clone();
-        log::info!("[NEW_TAB_12] looking up main window");
-        let main_window = app.get_webview_window("main")
-            .ok_or_else(|| {
-                log::error!("[NEW_TAB_12] FAILED: main window not found");
-                "Main window not found".to_string()
-            })?;
-        log::info!("[NEW_TAB_12] main window found");
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-
-        let main_pos = main_window.outer_position().unwrap_or_default();
-        let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
-
-
-        let geo = compute_browser_geometry(main_pos, main_size, 1.0);
-
-        let pos_x = geo.x as f64;
-        let pos_y = geo.y as f64;
-        let size_w = geo.width as f64;
-        let size_h = geo.height as f64;
-
-        log::info!("[NEW_TAB_13] about to create WebView with geometry: x={}, y={}, w={}, h={}", pos_x, pos_y, size_w, size_h);
-
-        p.phase_end("webview_checking_geometry", Some("geometry computed"));
-
-        let webview_url: WebviewUrl = match url::Url::parse(&url) {
-            Ok(u) => WebviewUrl::External(u),
-            Err(_) => WebviewUrl::App("about:blank".into()),
-        };
-
-        p.phase_start("webview_builder_create");
-        log::info!("[NEW_TAB_14] creating WebviewWindowBuilder");
-        let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
-            .title("EduOS Browser")
-            .position(pos_x, pos_y)
-            .inner_size(size_w, size_h)
-            .decorations(false)
-            .resizable(false)
-            .skip_taskbar(true)
-            .visible(true)
-            .focused(true);
-
-        log::info!("[NEW_TAB_14] builder created, calling build()");
-        p.phase_end("webview_builder_create", Some("builder created"));
-
-        p.phase_start("webview_build");
-        log::info!("[NEW_TAB_15] about to call builder.build()");
-        match builder.build() {
-            Ok(browser_win) => {
-                log::info!("[NEW_TAB_15] SUCCESS: builder.build() succeeded");
-                p.phase_end("webview_build", Some("WebView built successfully"));
-
-                disable_main_window_rounded_corners(&browser_win);
-                lifecycle.mark_active();
-                log::info!("[NEW_TAB_16] lifecycle state updated to active");
-
-                sync_browser_layout(&handle);
-
-                let trace = p.finish();
-                log::info!("[WEBVIEW] WebView created in {}ms total", trace.total_ms);
-                for (phase, dur) in &trace.phase_breakdown {
-                    log::info!("[WEBVIEW]   {}: {}ms", phase, dur);
-                }
-            }
-            Err(e) => {
-                log::error!("[NEW_TAB_15] FAILED: builder.build() error: {}", e);
-                return Err(format!("Failed to create WebView: {}", e));
+    // Create the browser child WebView if not yet created.
+    {
+        let mut browser_wv = browser_state.webview.lock().unwrap();
+        if browser_wv.is_none() {
+            let parsed_url = url::Url::parse(&url)
+                .map_err(|e| format!("Invalid URL: {}", e))?;
+            let webview_url = WebviewUrl::External(parsed_url);
+            let builder = Webview::builder("browser", webview_url);
+            let browser_webview = main_window
+                .add_child(
+                    builder,
+                    LogicalPosition::new(0.0, UI_HEIGHT),
+                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                )
+                .map_err(|e| format!("Failed to create browser child webview: {}", e))?;
+            *browser_wv = Some(browser_webview);
+        } else {
+            // Update bounds in case the main window was resized since last creation.
+            if let Err(e) = browser_wv.as_ref().unwrap().set_bounds(browser_bounds) {
+                log::warn!("Failed to update browser bounds: {}", e);
             }
         }
-    } else {
-        log::info!("[NEW_TAB_13] reusing existing WebView (no creation needed)");
-        lifecycle.mark_active();
-        log::info!("[NEW_TAB_16] lifecycle state updated to active (reused)");
+    };
+
+    lifecycle.mark_active();
+
+    // Navigate to the requested URL.
+    let target_url = url::Url::parse(&url)
+        .map_err(|e| format!("Invalid URL: {}", e))?;
+    if let Some(ref webview) = *browser_state.webview.lock().unwrap() {
+        webview.navigate(target_url)
+            .map_err(|e| format!("Navigation failed: {}", e))?;
     }
 
-    log::info!("[NEW_TAB_17] recording navigation");
+    // Record navigation in session state (preserved from original).
     lifecycle.record_navigation_sync(&url, &tabId);
-
-
-    log::info!("[NEW_TAB_17] looking up browser window for navigation");
-    let window = app.get_webview_window("browser").ok_or_else(|| {
-        log::error!("[NEW_TAB_17] FAILED: browser window not found");
-        "Browser not found".to_string()
-    })?;
-    log::info!("[NEW_TAB_17] browser window found, proceeding with navigation");
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("Time error: {}", e))?
         .as_millis() as u64;
 
-    
     let domain = SequenceTracker::extract_domain(&url);
 
-    
     let mem_tracker = app.state::<Mutex<MemoryTracker>>();
     let (rss, pressure) = {
         let m = mem_tracker.lock().unwrap();
-        
         let last = m.snapshots.last();
-        (
-            last.map(|s| s.combined_rss_mb),
-            last.map(|s| s.pressure_level.clone()),
-        )
+        (last.map(|s| s.combined_rss_mb), last.map(|s| s.pressure_level.clone()))
     };
 
-    
     let event = NavigationEvent {
         timestamp: now_ms,
         url: url.clone(),
         domain: domain.clone(),
         action: navigationType.clone(),
         tab_id: tabId.clone(),
-        duration_ms: None, 
+        duration_ms: None,
         memory_rss_mb: rss,
         memory_pressure: pressure,
     };
 
-    
     let seq_tracker = app.state::<Mutex<SequenceTracker>>();
     {
         let mut st = seq_tracker.lock().unwrap();
         st.add_event(event);
     }
 
-    
     let session_mgr = app.state::<Mutex<SessionManager>>();
     if let Ok(mut session) = session_mgr.lock() {
         if let Some(ref mut s) = session.current_session {
@@ -1525,7 +1244,6 @@ async fn navigate_browser(
         }
     }
 
-    
     let tab_manager = app.state::<Mutex<TabManager>>();
     {
         let tm = tab_manager.lock().unwrap();
@@ -1538,13 +1256,10 @@ async fn navigate_browser(
             history.truncate(new_len);
         }
 
-
         if history.len() >= MAX_HISTORY_ENTRIES {
-            
             let remove_count = (history.len() - MAX_HISTORY_ENTRIES) + 1;
+            history.dedup();
             history.drain(0..remove_count);
-
-            
             for tab in tabs.values_mut() {
                 if tab.history_index >= remove_count {
                     tab.history_index -= remove_count;
@@ -1557,35 +1272,31 @@ async fn navigate_browser(
         history.push(url.clone());
     }
 
-    
-    let encoded = serde_json::to_string(&url).map_err(|e| e.to_string())?;
-    let script = format!("window.location.href = {}", encoded);
-    log::info!("[NEW_TAB_18] about to execute navigation script");
-    window.eval(&script).map_err(|e| {
-        log::error!("[NEW_TAB_18] FAILED: window.eval error: {}", e);
-        e.to_string()
-    })?;
-    log::info!("[NEW_TAB_18] navigate_browser completed successfully");
-    log::info!("[NEW_TAB_18] timestamp_ms: {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis());
     Ok(())
 }
 
 #[tauri::command]
 async fn reload_browser(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("browser").ok_or("Browser not found")?;
-    window.eval("window.location.reload()").map_err(|e| e.to_string())
+    let browser_state = app.state::<BrowserWebview>();
+    let webview = browser_state.webview.lock().unwrap();
+    let wv = webview.as_ref().ok_or("Browser not created")?;
+    wv.reload().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn back_browser(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("browser").ok_or("Browser not found")?;
-    window.eval("window.history.back()").map_err(|e| e.to_string())
+    let browser_state = app.state::<BrowserWebview>();
+    let webview = browser_state.webview.lock().unwrap();
+    let wv = webview.as_ref().ok_or("Browser not created")?;
+    wv.eval("window.history.back()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn forward_browser(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("browser").ok_or("Browser not found")?;
-    window.eval("window.history.forward()").map_err(|e| e.to_string())
+    let browser_state = app.state::<BrowserWebview>();
+    let webview = browser_state.webview.lock().unwrap();
+    let wv = webview.as_ref().ok_or("Browser not created")?;
+    wv.eval("window.history.forward()").map_err(|e| e.to_string())
 }
 
 
@@ -1631,20 +1342,16 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
     let current_state = lifecycle.get_state();
 
     if current_state == WebViewState::Active || current_state == WebViewState::Idle {
-        
         lifecycle.mark_active();
-        return Ok(false); 
+        return Ok(false);
     }
 
-    
     lifecycle.set_restoring();
 
-    
     let url_to_load = {
         let last_url = lifecycle.last_url.lock().unwrap();
         let last_tab = lifecycle.last_tab_id.lock().unwrap();
 
-        
         let tab_manager = app.state::<Mutex<TabManager>>();
         let tm = tab_manager.lock().unwrap();
         let tabs = tm.tabs.lock().unwrap();
@@ -1661,48 +1368,35 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         }.unwrap_or_else(|| HOMEPAGE.to_string())
     };
 
-    
-    let handle = app.app_handle().clone();
-    let main_window = app.get_webview_window("main")
-        .ok_or("Main window not found")?;
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_size = main_window.inner_size()
+        .map_err(|e| format!("Failed to get main window size: {}", e))?;
+    let scale = main_window.scale_factor()
+        .map_err(|e| format!("Failed to get scale factor: {}", e))?;
 
-    let main_pos = main_window.outer_position().unwrap_or_default();
-    let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
+    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
 
-
-    let geo = compute_browser_geometry(main_pos, main_size, 1.0);
-    let pos_x = geo.x as f64;
-    let pos_y = geo.y as f64;
-    let size_w = geo.width as f64;
-    let size_h = geo.height as f64;
-
-    let webview_url: WebviewUrl = match url::Url::parse(&url_to_load) {
-        Ok(u) => WebviewUrl::External(u),
-        Err(_) => WebviewUrl::App("about:blank".into()),
-    };
-
-    let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
-        .title("EduOS Browser")
-        .position(pos_x, pos_y)
-        .inner_size(size_w, size_h)
-        .decorations(false)
-        .resizable(false)
-        .skip_taskbar(true)
-        .visible(true)
-        .focused(true);
-
-    match builder.build() {
-        Ok(browser_win) => {
-            disable_main_window_rounded_corners(&browser_win);
-            lifecycle.mark_active();
-            log::info!("WebView restored: {}", url_to_load);
-            Ok(true)
-        }
-        Err(e) => {
-            log::error!("Failed to restore WebView: {}", e);
-            Err(format!("Failed to restore WebView: {}", e))
+    let browser_state = app.state::<BrowserWebview>();
+    {
+        let mut browser_wv = browser_state.webview.lock().unwrap();
+        if browser_wv.is_none() {
+            let parsed_url = url::Url::parse(&url_to_load)
+                .map_err(|e| format!("Invalid URL: {}", e))?;
+            let builder = Webview::builder("browser", WebviewUrl::External(parsed_url));
+            let browser_webview = main_window
+                .add_child(
+                    builder,
+                    LogicalPosition::new(0.0, UI_HEIGHT),
+                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                )
+                .map_err(|e| format!("Failed to create browser webview: {}", e))?;
+            *browser_wv = Some(browser_webview);
         }
     }
+
+    lifecycle.mark_active();
+    log::info!("Browser child WebView restored: {}", url_to_load);
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1729,13 +1423,14 @@ async fn destroy_webview(app: tauri::AppHandle) -> Result<Option<String>, String
         tab.map(|t| history.get(t.history_index).cloned()).flatten()
     };
 
-    
-    if let Some(browser) = app.get_webview_window("browser") {
-        let _ = browser.close();
+
+    let browser_state = app.state::<BrowserWebview>();
+    if let Some(wv) = browser_state.webview.lock().unwrap().take() {
+        let _ = wv.close();
     }
 
     lifecycle.set_destroyed();
-    log::info!("WebView destroyed");
+    log::info!("Browser child WebView destroyed");
 
     Ok(last_url)
 }
@@ -1894,10 +1589,11 @@ fn evict_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) -> R
     emit_lifecycle_event(&app, evict_requested_event);
 
     
-    let action_succeeded = if let Some(browser) = app.get_webview_window("browser") {
-        browser.close().is_ok()
+    let browser_state = app.state::<BrowserWebview>();
+    let action_succeeded = if let Some(wv) = browser_state.webview.lock().unwrap().take() {
+        wv.close().is_ok()
     } else {
-        true 
+        true
     };
 
     lifecycle.set_destroyed();
@@ -2038,15 +1734,13 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
     
     lifecycle.set_restoring();
 
-    
+
     let process_before_for_error = process_before.clone();
 
-    
-    let handle = app.app_handle().clone();
-    let main_window = match app.get_webview_window("main") {
+
+    let main_window = match app.get_window("main") {
         Some(w) => w,
         None => {
-            
             let event = LifecycleEvent::new(
                 format!("rst-fail-{}-{}", tabId, next_event_sequence()),
                 next_event_sequence(),
@@ -2065,60 +1759,76 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         }
     };
 
-    let main_pos = main_window.outer_position().unwrap_or_default();
-    let main_size = main_window.outer_size().unwrap_or(tauri::PhysicalSize { width: 1280, height: 800 });
-
-
-    let geo = compute_browser_geometry(main_pos, main_size, 1.0);
-    let pos_x = geo.x as f64;
-    let pos_y = geo.y as f64;
-    let size_w = geo.width as f64;
-    let size_h = geo.height as f64;
-
-    let webview_url: WebviewUrl = match url::Url::parse(&url_to_load) {
-        Ok(u) => WebviewUrl::External(u),
-        Err(_) => WebviewUrl::App("about:blank".into()),
+    let main_size = match main_window.inner_size() {
+        Ok(s) => s,
+        Err(e) => {
+            let event = LifecycleEvent::new(
+                format!("rst-fail-{}-{}", tabId, next_event_sequence()),
+                next_event_sequence(),
+                LifecycleEventType::RestoreFailed,
+                tabId.clone(),
+                previous_state_str.to_string(),
+                previous_state_str.to_string(),
+                pressure_level.to_string(),
+                format!("Failed to get main window size: {}", e),
+                process_before_for_error.clone(),
+                process_before_for_error,
+                false,
+            );
+            emit_lifecycle_event(&app, event);
+            return Err(format!("Failed to get main window size: {}", e));
+        }
     };
 
-    let builder = WebviewWindowBuilder::new(&handle, "browser", webview_url)
-        .title("EduOS Browser")
-        .position(pos_x, pos_y)
-        .inner_size(size_w, size_h)
-        .decorations(false)
-        .resizable(false)
-        .skip_taskbar(true)
-        .visible(true)
-        .focused(true);
+    let scale = match main_window.scale_factor() {
+        Ok(s) => s,
+        Err(e) => {
+            let event = LifecycleEvent::new(
+                format!("rst-fail-{}-{}", tabId, next_event_sequence()),
+                next_event_sequence(),
+                LifecycleEventType::RestoreFailed,
+                tabId.clone(),
+                previous_state_str.to_string(),
+                previous_state_str.to_string(),
+                pressure_level.to_string(),
+                format!("Failed to get scale factor: {}", e),
+                process_before_for_error.clone(),
+                process_before_for_error,
+                false,
+            );
+            emit_lifecycle_event(&app, event);
+            return Err(format!("Failed to get scale factor: {}", e));
+        }
+    };
 
-    match builder.build() {
-        Ok(browser_win) => {
+    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
 
-            disable_main_window_rounded_corners(&browser_win);
+    let browser_state = app.state::<BrowserWebview>();
+    let result = {
+        let mut browser_wv = browser_state.webview.lock().unwrap();
+        if browser_wv.is_none() {
+            let parsed_url = url::Url::parse(&url_to_load)
+                .map_err(|e| format!("Invalid URL: {}", e))?;
+            let builder = Webview::builder("browser", WebviewUrl::External(parsed_url));
+            let browser_webview = main_window
+                .add_child(
+                    builder,
+                    LogicalPosition::new(0.0, UI_HEIGHT),
+                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                )
+                .map_err(|e| format!("Failed to create browser webview: {}", e))?;
+            *browser_wv = Some(browser_webview);
+        }
+        Ok::<(), String>(())
+    };
+
+    match result {
+        Ok(()) => {
             lifecycle.mark_active();
             *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
             *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
 
             log::info!("Tab {} restored from evicted state", tabId);
-
-
-            sys.refresh_all();
-            let process_after = capture_process_state(&sys);
-
-
-            let restore_completed_event = LifecycleEvent::new(
-                format!("rst-cmp-{}-{}", tabId, next_event_sequence()),
-                next_event_sequence(),
-                LifecycleEventType::RestoreCompleted,
-                tabId.clone(),
-                previous_state_str.to_string(),
-                "active".to_string(),
-                pressure_level.to_string(),
-                format!("Restore completed for {} to {}", tabId, url_to_load),
-                process_before,
-                process_after,
-                true,
-            );
-            emit_lifecycle_event(&app, restore_completed_event);
 
             Ok(TabLifecycleInfo {
                 tab_id: tabId,
@@ -2129,7 +1839,6 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
             })
         }
         Err(e) => {
-
             sys.refresh_all();
             let process_after = capture_process_state(&sys);
 
@@ -2350,7 +2059,7 @@ impl WebView2ProcessSnapshot {
 /// All COM work happens inside the `with_webview` closure.
 #[cfg(windows)]
 fn sample_webview2_memory(
-    browser_window: &tauri::WebviewWindow,
+    browser_webview: &tauri::Webview,
     app: &tauri::AppHandle,
 ) -> Result<(f64, u32, u32, Vec<u32>), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
@@ -2359,7 +2068,7 @@ fn sample_webview2_memory(
 
     let result_arc: Arc<Mutex<Option<(Vec<u32>, u32, u32)>>> = Arc::new(Mutex::new(None));
 
-    let r = browser_window.with_webview({
+    let r = browser_webview.with_webview({
         let result_arc = result_arc.clone();
         move |webview| {
             let controller: ICoreWebView2Controller = webview.controller();
@@ -2468,18 +2177,18 @@ fn get_webview2_process_snapshot(app: tauri::AppHandle) -> Result<WebView2Proces
 
     let timestamp_ms = current_timestamp_ms();
 
-    let browser_window = app.get_webview_window("browser")
-        .ok_or_else(|| "Browser window not found".to_string())?;
+    let browser_state = app.state::<BrowserWebview>();
+    let browser_webview = browser_state.webview.lock().unwrap();
+    let bw = browser_webview.as_ref().ok_or("Browser not created")?;
 
-    
     let (total_mb, browser_count, renderer_count, webview2_pids) =
-        sample_webview2_memory(&browser_window, &app)?;
+        sample_webview2_memory(bw, &app)?;
 
-    
+
     let env_result_arc: Arc<Mutex<Option<(Option<String>, Option<String>)>>> =
         Arc::new(Mutex::new(None));
 
-    let _r = browser_window.with_webview({
+    let _r = bw.with_webview({
         let env_result_arc = env_result_arc.clone();
         move |webview| {
             let controller: ICoreWebView2Controller = webview.controller();
@@ -2529,7 +2238,7 @@ fn get_webview2_process_snapshot(app: tauri::AppHandle) -> Result<WebView2Proces
     
     let kinds_result_arc: Arc<Mutex<Option<Vec<String>>>> = Arc::new(Mutex::new(None));
 
-    let _r = browser_window.with_webview({
+    let _r = bw.with_webview({
         let kinds_result_arc = kinds_result_arc.clone();
         move |webview| {
             let controller: ICoreWebView2Controller = webview.controller();
@@ -3155,8 +2864,10 @@ fn run_benchmark_workload(
         
         
         
-        let group_memory_mb = app.get_webview_window("browser")
-            .and_then(|w| sample_webview2_memory(&w, &app).ok())
+        let browser_state = app.state::<BrowserWebview>();
+        let group_memory_mb = browser_state.webview.lock().unwrap()
+            .as_ref()
+            .and_then(|w| sample_webview2_memory(w, &app).ok())
             .map(|(mb, _, _, _)| mb)
             .unwrap_or(0.0);
 
@@ -3349,7 +3060,7 @@ async fn test_benchmark_quick(
 /// Panic handler that writes to a log file for diagnostics
 fn setup_panic_handler() {
     use std::panic;
-    use std::fs::{File, OpenOptions};
+    use std::fs::OpenOptions;
     use std::io::Write;
 
     // Get app-local log directory
@@ -3450,6 +3161,7 @@ fn main() {
         .manage(Mutex::new(MemoryTracker::default()))
         .manage(Mutex::new(SequenceTracker::default()))
         .manage(WebViewLifecycle::default())
+        .manage(BrowserWebview::default())
         .manage(LifecycleEventStore::default())
         .manage(Mutex::new(tab_manager))
         .manage(Mutex::new(SessionManager::default()))
@@ -3464,7 +3176,6 @@ fn main() {
             minimize_window,
             toggle_maximize,
             close_window,
-            raise_browser_zorder,
             get_app_version,
             is_benchmark_mode,
             exit_app,
@@ -3566,45 +3277,18 @@ fn main() {
                 }
             };
 
-            
             disable_main_window_rounded_corners(&main_window);
-
-            // Install Win32 WNDPROC subclass on main window BEFORE any event listeners.
-            // This synchronously intercepts WM_NCLBUTTONDOWN, WM_MOVING, etc. and
-            // raises the browser window in the same Windows message dispatch —
-            // eliminating the async-IPC race condition that caused z-order drops
-            // when clicking drag-region areas.
-            if let Some(browser_window) = handle.get_webview_window("browser") {
-                setup_main_window_subclass(&main_window, &browser_window);
-            }
+            disable_main_window_rounded_corners(&main_window);
 
             p.phase_start("window_event_listeners");
 
-            let resize_handle = handle.clone();
             main_window.on_window_event(move |event| match event {
-                // On resize or move: sync layout AND raise browser to maintain z-order.
-                // This catches dragging the title bar, resizing edges, and maximize/restore.
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
-                    if let Some(browser) = resize_handle.get_webview_window("browser") {
-                        let _ = browser.show();
-                        raise_window_without_activation(&browser);
-                    }
-                    sync_browser_layout(&resize_handle);
-                }
-                // On focus gained: ensure browser is visible and at correct z-order.
-                // SWP_NOACTIVATE keeps main window as keyboard focus target.
-                tauri::WindowEvent::Focused(true) => {
-                    if let Some(browser) = resize_handle.get_webview_window("browser") {
-                        let _ = browser.show();
-                        raise_window_without_activation(&browser);
-                        sync_browser_layout(&resize_handle);
-                    }
-                }
-                // On close: close browser window first, then allow main window to close.
+                // On close: close browser child webview before main window closes.
                 tauri::WindowEvent::CloseRequested { .. } => {
-                    if let Some(browser) = resize_handle.get_webview_window("browser") {
-                        let _ = browser.close();
-                    }
+                    let browser_state = handle.state::<BrowserWebview>();
+                    if let Some(wv) = browser_state.webview.lock().unwrap().take() {
+                        let _ = wv.close();
+                    };
                 }
                 _ => {}
             });
