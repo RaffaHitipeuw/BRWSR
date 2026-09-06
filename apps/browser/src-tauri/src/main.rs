@@ -69,36 +69,56 @@ fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
 /// Fix native child-HWND z-order so React UI stays above browser content.
 /// Wry's add_child always places new children at HWND_TOP, which puts the browser
-/// ABOVE the React UI's container. This function reorders the browser container
-/// to be BELOW the React UI container using SetWindowPos with HWND_ZORDER insert.
+/// ABOVE the React UI's container. This function enumerates ALL children of the main
+/// window, finds the oldest WRY_WEBVIEW child (the React UI container, created first),
+/// and brings it to the top of the z-order using SetWindowPos.
 #[cfg(target_os = "windows")]
 fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
-    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_CHILD, GW_HWNDPREV, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindow, SetWindowPos, GW_CHILD, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, HWND_TOP,
+    };
 
     let main_hwnd = match main_window.hwnd() {
         Ok(h) => h,
         Err(_) => return,
     };
 
-    // React UI container = first child of main window (the React WebView's WRY_WEBVIEW container).
-    let react_ui_hwnd = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
-        Ok(h) => h,
-        Err(_) => return,
-    };
-
-    // Browser container = the window just above React UI in z-order.
-    // Since add_child places new children at HWND_TOP, the browser container
-    // is the window immediately preceding the React UI container (going backward in z-order).
-    let browser_container_hwnd = match unsafe { GetWindow(react_ui_hwnd, GW_HWNDPREV) } {
+    // Enumerate all children of the main window using GetWindow.
+    // GetWindow(main, GW_CHILD) returns the topmost child.
+    // GetWindow(child, GW_HWNDPREV) walks toward the BOTTOM of the z-order.
+    // The LAST child visited is the bottommost (oldest, React UI container).
+    let mut child = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
         Ok(h) if !h.is_invalid() => h,
         _ => return,
     };
 
-    // Place browser container BELOW React UI container (React UI stays on top).
+    let mut oldest_wry_child = child;
+    loop {
+        // Check class name of this child.
+        let mut class_buf = [0u16; 64];
+        let len = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetClassNameW(child, &mut class_buf)
+        };
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+            if class_name == "WRY_WEBVIEW" {
+                // Track as we walk toward bottom; last WRY_WEBVIEW is the oldest (React UI).
+                oldest_wry_child = child;
+            }
+        }
+
+        // Move to previous sibling (toward bottom of z-order).
+        match unsafe { GetWindow(child, GW_HWNDPREV) } {
+            Ok(next) if !next.is_invalid() && next != child => child = next,
+            _ => break,
+        }
+    }
+
+    // Bring the oldest WRY_WEBVIEW child (React UI container) to the top.
     unsafe {
         let _ = SetWindowPos(
-            browser_container_hwnd,
-            Some(react_ui_hwnd),
+            oldest_wry_child,
+            Some(HWND_TOP),
             0,
             0,
             0,
@@ -1235,6 +1255,7 @@ async fn navigate_browser(
                     LogicalSize::new(main_logical_width, browser_height),
                 )
                 .map_err(|e| format!("Failed to create browser child webview: {}", e))?;
+
             *browser_wv = Some(browser_webview);
             true
         } else {
@@ -3333,6 +3354,9 @@ fn main() {
             disable_main_window_rounded_corners(&main_window);
             disable_main_window_rounded_corners(&main_window);
 
+            // Clone for the focus event handler which needs to call ensure_react_ui_above_browser.
+            let main_window_for_zorder = main_window.clone();
+
             p.phase_start("window_event_listeners");
 
             main_window.on_window_event(move |event| match event {
@@ -3342,6 +3366,10 @@ fn main() {
                     if let Some(wv) = browser_state.webview.lock().unwrap().take() {
                         let _ = wv.close();
                     };
+                }
+                // On main window gaining focus: ensure React UI stays above browser.
+                tauri::WindowEvent::Focused(true) => {
+                    ensure_react_ui_above_browser(&main_window_for_zorder.as_ref().window());
                 }
                 _ => {}
             });
