@@ -1205,12 +1205,19 @@ async fn navigate_browser(
     let scale = main_window.scale_factor()
         .map_err(|e| format!("Failed to get scale factor: {}", e))?;
 
-    // Calculate browser child bounds in the main window's client area.
-    // Browser occupies: x=0, y=UI_HEIGHT, width=main_width, height=main_height-UI_HEIGHT.
-    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
+    // Convert main window size to logical units to match LogicalPosition/LogicalSize.
+    // inner_size() returns physical pixels, but LogicalPosition/LogicalSize are logical.
+    // Mixing physical height (e.g., 600px at scale 1.5 = 400 logical) with logical position (88)
+    // caused the browser to overflow: browser_height=468 physical → LogicalSize=468 logical
+    // → 468 * 1.5 = 702 physical, overflowing a 600px window.
+    let main_logical_height = main_size.height as f64 / scale;
+    let main_logical_width = main_size.width as f64 / scale;
+
+    // Browser child bounds: positioned below React UI at y=UI_HEIGHT, fills remaining area.
+    let browser_height = main_logical_height - UI_HEIGHT;
     let browser_bounds = Rect {
         position: LogicalPosition::new(0.0, UI_HEIGHT).into(),
-        size: LogicalSize::new(main_size.width as f64, browser_height as f64).into(),
+        size: LogicalSize::new(main_logical_width, browser_height).into(),
     };
 
     // Create the browser child WebView if not yet created.
@@ -1225,7 +1232,7 @@ async fn navigate_browser(
                 .add_child(
                     builder,
                     LogicalPosition::new(0.0, UI_HEIGHT),
-                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                    LogicalSize::new(main_logical_width, browser_height),
                 )
                 .map_err(|e| format!("Failed to create browser child webview: {}", e))?;
             *browser_wv = Some(browser_webview);
@@ -1427,7 +1434,10 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
     let scale = main_window.scale_factor()
         .map_err(|e| format!("Failed to get scale factor: {}", e))?;
 
-    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
+    // Convert to logical to match LogicalPosition/LogicalSize (see navigate_browser for full explanation).
+    let main_logical_height = main_size.height as f64 / scale;
+    let main_logical_width = main_size.width as f64 / scale;
+    let browser_height = main_logical_height - UI_HEIGHT;
 
     let browser_state = app.state::<BrowserWebview>();
     let browser_created = {
@@ -1440,7 +1450,7 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
                 .add_child(
                     builder,
                     LogicalPosition::new(0.0, UI_HEIGHT),
-                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                    LogicalSize::new(main_logical_width, browser_height),
                 )
                 .map_err(|e| format!("Failed to create browser webview: {}", e))?;
             *browser_wv = Some(browser_webview);
@@ -1862,7 +1872,9 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
         }
     };
 
-    let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
+    let main_logical_height = main_size.height as f64 / scale;
+    let main_logical_width = main_size.width as f64 / scale;
+    let browser_height = main_logical_height - UI_HEIGHT;
 
     let browser_state = app.state::<BrowserWebview>();
     let browser_created = {
@@ -1875,7 +1887,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
                 .add_child(
                     builder,
                     LogicalPosition::new(0.0, UI_HEIGHT),
-                    LogicalSize::new(main_size.width as f64, browser_height as f64),
+                    LogicalSize::new(main_logical_width, browser_height),
                 )
                 .map_err(|e| format!("Failed to create browser webview: {}", e))?;
             *browser_wv = Some(browser_webview);
