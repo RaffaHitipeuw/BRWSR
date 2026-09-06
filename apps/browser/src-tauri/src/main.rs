@@ -67,11 +67,132 @@ fn disable_main_window_rounded_corners(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "windows"))]
 fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
-/// Fix native child-HWND z-order so React UI stays above browser content.
-/// Wry's add_child always places new children at HWND_TOP, which puts the browser
-/// ABOVE the React UI's container. This function enumerates ALL children of the main
-/// window, finds the oldest WRY_WEBVIEW child (the React UI container, created first),
-/// and brings it to the top of the z-order using SetWindowPos.
+/// Forensic: enumerate all HWNDs in the tree starting from main_window.
+/// Logs class name, window text, rect, visible state, and z-order index for every child.
+/// Also recursively enumerates descendants. Used for debugging child WebView z-order issues.
+#[cfg(target_os = "windows")]
+fn enumerate_hwnd_tree(main_window: &tauri::Window, label: &str) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetWindow, GetWindowTextW, GetWindowRect, IsWindowVisible,
+        GW_CHILD, GW_HWNDNEXT,
+    };
+
+    let main_hwnd = match main_window.hwnd() {
+        Ok(h) => h,
+        Err(_) => {
+            log::error!("[HWND-TREE] {}: failed to get main HWND", label);
+            return;
+        }
+    };
+
+    log::info!("[HWND-TREE] === {} === main_hwnd={:?} ===", label, main_hwnd.0);
+
+    // Get z-order index of a child relative to main (0 = topmost).
+    fn z_order_index(main: HWND, target: HWND) -> Option<usize> {
+        unsafe {
+            let mut child = GetWindow(main, GW_CHILD).ok()?;
+            let mut idx = 0usize;
+            loop {
+                if child == target {
+                    return Some(idx);
+                }
+                match GetWindow(child, GW_HWNDNEXT) {
+                    Ok(next) if !next.is_invalid() => { child = next; idx += 1; }
+                    _ => return None,
+                }
+            }
+        }
+    }
+
+    // Get class name of an HWND.
+    fn class_name(h: HWND) -> String {
+        let mut buf = [0u16; 128];
+        let len = unsafe { GetClassNameW(h, &mut buf) };
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            "?".to_string()
+        }
+    }
+
+    // Get window text of an HWND.
+    fn window_text(h: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetWindowTextW(h, &mut buf) };
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            "".to_string()
+        }
+    }
+
+    // Get rect of an HWND.
+    fn window_rect(h: HWND) -> RECT {
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe { let _ = GetWindowRect(h, &mut r); }
+        r
+    }
+
+    // Recursively enumerate descendants up to a depth limit.
+    fn enumerate_descendants(hwnd: HWND, indent: usize, max_depth: usize) {
+        if indent >= max_depth {
+            log::info!("{}  [max depth reached]", "  ".repeat(indent));
+            return;
+        }
+        let mut child = match unsafe { GetWindow(hwnd, GW_CHILD) } {
+            Ok(c) if !c.is_invalid() => c,
+            _ => return,
+        };
+        loop {
+            let cls = class_name(child);
+            let txt = window_text(child);
+            let rect = window_rect(child);
+            let visible = unsafe { IsWindowVisible(child) }.as_bool();
+            let z_idx = z_order_index(hwnd, child);
+            log::info!(
+                "{}  child: hwnd={:?} class=\"{}\" text=\"{}\" visible={} z={:?} rect=({},{} {},{}",
+                "  ".repeat(indent),
+                child.0, cls, txt, visible, z_idx,
+                rect.left, rect.top, rect.right, rect.bottom
+            );
+            enumerate_descendants(child, indent + 1, max_depth);
+            match unsafe { GetWindow(child, GW_HWNDNEXT) } {
+                Ok(next) if !next.is_invalid() && next != child => child = next,
+                _ => break,
+            }
+        }
+    }
+
+    // Enumerate direct children of main.
+    let mut child = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
+        Ok(c) if !c.is_invalid() => c,
+        _ => {
+            log::info!("[HWND-TREE] {}: main has no children", label);
+            return;
+        }
+    };
+
+    let mut idx = 0usize;
+    loop {
+        let cls = class_name(child);
+        let txt = window_text(child);
+        let rect = window_rect(child);
+        let visible = unsafe { IsWindowVisible(child) }.as_bool();
+        log::info!(
+            "[HWND-TREE]   [{}] hwnd={:?} class=\"{}\" text=\"{}\" visible={} rect=({},{} {},{}",
+            idx, child.0, cls, txt, visible, rect.left, rect.top, rect.right, rect.bottom
+        );
+        enumerate_descendants(child, 1, 3);
+        match unsafe { GetWindow(child, GW_HWNDNEXT) } {
+            Ok(next) if !next.is_invalid() && next != child => { child = next; idx += 1; }
+            _ => break,
+        }
+    }
+
+    log::info!("[HWND-TREE] === {} === end ===", label);
+}
+
 #[cfg(target_os = "windows")]
 fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -83,49 +204,69 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
         Err(_) => return,
     };
 
-    // Enumerate all children of the main window using GetWindow.
-    // GetWindow(main, GW_CHILD) returns the topmost child.
-    // GetWindow(child, GW_HWNDPREV) walks toward the BOTTOM of the z-order.
-    // The LAST child visited is the bottommost (oldest, React UI container).
+    log::info!("[ZORDER] === ensure_react_ui_above_browser: BEFORE ===");
+    enumerate_hwnd_tree(main_window, "before-fix");
+
+    // Walk all children to find WRY_WEBVIEW containers.
+    // GW_CHILD = topmost; GW_HWNDPREV = previous (toward bottom).
     let mut child = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
         Ok(h) if !h.is_invalid() => h,
         _ => return,
     };
 
     let mut oldest_wry_child = child;
+    let mut z_idx = 0usize;
+    let mut oldest_wry_z = 0usize;
+    let mut youngest_wry_child = child;
+    let mut youngest_wry_z = 0usize;
+    let mut wry_children: Vec<(usize, windows::Win32::Foundation::HWND, String)> = Vec::new();
+
     loop {
-        // Check class name of this child.
         let mut class_buf = [0u16; 64];
-        let len = unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetClassNameW(child, &mut class_buf)
-        };
+        let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(child, &mut class_buf) };
         if len > 0 {
             let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+            log::info!(
+                "[ZORDER]   child[{}] hwnd={:?} class=\"{}\"",
+                z_idx, child.0, class_name
+            );
             if class_name == "WRY_WEBVIEW" {
-                // Track as we walk toward bottom; last WRY_WEBVIEW is the oldest (React UI).
+                wry_children.push((z_idx, child, class_name.clone()));
                 oldest_wry_child = child;
+                oldest_wry_z = z_idx;
+                youngest_wry_child = child;
+                youngest_wry_z = z_idx;
             }
         }
-
-        // Move to previous sibling (toward bottom of z-order).
         match unsafe { GetWindow(child, GW_HWNDPREV) } {
-            Ok(next) if !next.is_invalid() && next != child => child = next,
+            Ok(next) if !next.is_invalid() && next != child => { child = next; z_idx += 1; }
             _ => break,
         }
     }
 
-    // Bring the oldest WRY_WEBVIEW child (React UI container) to the top.
+    log::info!(
+        "[ZORDER] Found {} WRY_WEBVIEW children: oldest at z={} hwnd={:?}, youngest at z={} hwnd={:?}",
+        wry_children.len(), oldest_wry_z, oldest_wry_child.0,
+        youngest_wry_z, youngest_wry_child.0
+    );
+
+    // Approach: bring the OLDEST WRY_WEBVIEW (React UI) to the TOP.
+    log::info!(
+        "[ZORDER] Bringing oldest WRY_WEBVIEW (z={}, hwnd={:?}) to HWND_TOP",
+        oldest_wry_z, oldest_wry_child.0
+    );
     unsafe {
-        let _ = SetWindowPos(
+        let r = SetWindowPos(
             oldest_wry_child,
             Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
+            0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
+        log::info!("[ZORDER] SetWindowPos result: {:?}", r.is_ok());
     }
+
+    log::info!("[ZORDER] === ensure_react_ui_above_browser: AFTER ===");
+    enumerate_hwnd_tree(main_window, "after-fix");
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1271,6 +1412,8 @@ async fn navigate_browser(
     // Wry's add_child always places new children at HWND_TOP, which puts the browser
     // ABOVE the React UI. This reorders the browser container to be below React UI.
     if browser_created {
+        log::info!("[ZORDER] navigate_browser: browser newly created, calling ensure_react_ui_above_browser");
+        enumerate_hwnd_tree(&main_window, "navigate-before-fix");
         ensure_react_ui_above_browser(&main_window);
     }
 
