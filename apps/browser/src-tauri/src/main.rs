@@ -67,6 +67,50 @@ fn disable_main_window_rounded_corners(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "windows"))]
 fn disable_main_window_rounded_corners(_window: &tauri::WebviewWindow) {}
 
+/// Fix native child-HWND z-order so React UI stays above browser content.
+/// Wry's add_child always places new children at HWND_TOP, which puts the browser
+/// ABOVE the React UI's container. This function reorders the browser container
+/// to be BELOW the React UI container using SetWindowPos with HWND_ZORDER insert.
+#[cfg(target_os = "windows")]
+fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_CHILD, GW_HWNDPREV, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+
+    let main_hwnd = match main_window.hwnd() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    // React UI container = first child of main window (the React WebView's WRY_WEBVIEW container).
+    let react_ui_hwnd = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+
+    // Browser container = the window just above React UI in z-order.
+    // Since add_child places new children at HWND_TOP, the browser container
+    // is the window immediately preceding the React UI container (going backward in z-order).
+    let browser_container_hwnd = match unsafe { GetWindow(react_ui_hwnd, GW_HWNDPREV) } {
+        Ok(h) if !h.is_invalid() => h,
+        _ => return,
+    };
+
+    // Place browser container BELOW React UI container (React UI stays on top).
+    unsafe {
+        let _ = SetWindowPos(
+            browser_container_hwnd,
+            Some(react_ui_hwnd),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_react_ui_above_browser(main_window: &tauri::Window) {}
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1170,7 +1214,7 @@ async fn navigate_browser(
     };
 
     // Create the browser child WebView if not yet created.
-    {
+    let browser_created = {
         let mut browser_wv = browser_state.webview.lock().unwrap();
         if browser_wv.is_none() {
             let parsed_url = url::Url::parse(&url)
@@ -1185,13 +1229,22 @@ async fn navigate_browser(
                 )
                 .map_err(|e| format!("Failed to create browser child webview: {}", e))?;
             *browser_wv = Some(browser_webview);
+            true
         } else {
             // Update bounds in case the main window was resized since last creation.
             if let Err(e) = browser_wv.as_ref().unwrap().set_bounds(browser_bounds) {
                 log::warn!("Failed to update browser bounds: {}", e);
             }
+            false
         }
     };
+
+    // Fix z-order: ensure React UI container is above browser container.
+    // Wry's add_child always places new children at HWND_TOP, which puts the browser
+    // ABOVE the React UI. This reorders the browser container to be below React UI.
+    if browser_created {
+        ensure_react_ui_above_browser(&main_window);
+    }
 
     lifecycle.mark_active();
 
@@ -1377,7 +1430,7 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
     let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
 
     let browser_state = app.state::<BrowserWebview>();
-    {
+    let browser_created = {
         let mut browser_wv = browser_state.webview.lock().unwrap();
         if browser_wv.is_none() {
             let parsed_url = url::Url::parse(&url_to_load)
@@ -1391,7 +1444,15 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
                 )
                 .map_err(|e| format!("Failed to create browser webview: {}", e))?;
             *browser_wv = Some(browser_webview);
+            true
+        } else {
+            false
         }
+    };
+
+    // Fix z-order: ensure React UI container is above browser container.
+    if browser_created {
+        ensure_react_ui_above_browser(&main_window);
     }
 
     lifecycle.mark_active();
@@ -1804,7 +1865,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
     let browser_height = main_size.height.saturating_sub((UI_HEIGHT * scale) as u32);
 
     let browser_state = app.state::<BrowserWebview>();
-    let result = {
+    let browser_created = {
         let mut browser_wv = browser_state.webview.lock().unwrap();
         if browser_wv.is_none() {
             let parsed_url = url::Url::parse(&url_to_load)
@@ -1818,49 +1879,29 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
                 )
                 .map_err(|e| format!("Failed to create browser webview: {}", e))?;
             *browser_wv = Some(browser_webview);
+            true
+        } else {
+            false
         }
-        Ok::<(), String>(())
     };
 
-    match result {
-        Ok(()) => {
-            lifecycle.mark_active();
-            *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
-            *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
-
-            log::info!("Tab {} restored from evicted state", tabId);
-
-            Ok(TabLifecycleInfo {
-                tab_id: tabId,
-                lifecycle_state: "restoring".to_string(),
-                estimated_memory_mb: 50.0,
-                can_suspend: true,
-                can_evict: true,
-            })
-        }
-        Err(e) => {
-            sys.refresh_all();
-            let process_after = capture_process_state(&sys);
-
-            let event = LifecycleEvent::new(
-                format!("rst-fail-{}-{}", tabId, next_event_sequence()),
-                next_event_sequence(),
-                LifecycleEventType::RestoreFailed,
-                tabId.clone(),
-                previous_state_str.to_string(),
-                previous_state_str.to_string(),
-                pressure_level.to_string(),
-                format!("Restore failed: {}", e),
-                process_before,
-                process_after,
-                false,
-            );
-            emit_lifecycle_event(&app, event);
-
-            log::error!("Failed to restore tab: {}", e);
-            Err(format!("Failed to restore tab: {}", e))
-        }
+    if browser_created {
+        ensure_react_ui_above_browser(&main_window);
     }
+
+    lifecycle.mark_active();
+    *lifecycle.last_url.lock().unwrap() = Some(url_to_load.clone());
+    *lifecycle.last_tab_id.lock().unwrap() = Some(tabId.clone());
+
+    log::info!("Tab {} restored from evicted state", tabId);
+
+    Ok(TabLifecycleInfo {
+        tab_id: tabId,
+        lifecycle_state: "restoring".to_string(),
+        estimated_memory_mb: 50.0,
+        can_suspend: true,
+        can_evict: true,
+    })
 }
 
 #[tauri::command]
