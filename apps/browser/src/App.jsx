@@ -125,6 +125,39 @@ function App() {
     onGoForward: handleForward,
   });
 
+  // Diagnostic: Ctrl+Shift+D = run browser exclusion diagnostic
+  useEffect(() => {
+    const handleDiag = async (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "D") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[DIAG] Running browser exclusion diagnostic...");
+          const result = await browserCommands.diagnoseBrowserExclusion();
+          console.info("[DIAG] Result:", JSON.stringify(result, null, 2));
+          alert("Diagnostic done. Check console logs for [COORD] and [TEST_A] output.");
+        } catch (err) {
+          console.error("[DIAG] Failed:", err);
+          alert("Diagnostic failed: " + err);
+        }
+      }
+      // Ctrl+Shift+R = restore full region
+      if (e.ctrlKey && e.shiftKey && e.key === "R") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          const msg = await browserCommands.restoreBrowserFullRegion();
+          console.info("[DIAG] Restored:", msg);
+          alert("Full region restored: " + msg);
+        } catch (err) {
+          console.error("[DIAG] Restore failed:", err);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleDiag);
+    return () => window.removeEventListener("keydown", handleDiag);
+  }, []);
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden">
       <TabBar onTabClick={handleTabClick} onNewTab={handleNewTab} onCloseTab={handleCloseTab} />

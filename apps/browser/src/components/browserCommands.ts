@@ -303,6 +303,34 @@ export const browser = {
     const result = await invoke("get_webview2_process_snapshot");
     return result as WebView2ProcessSnapshot;
   },
+
+  /** Set overlay exclusion rectangles on the browser WRY.
+   *
+   * Coordinates are in browser WRY local physical pixels.
+   * Each rect is: { x, y, width, height } relative to browser WRY top-left.
+   *
+   * Call this from React when an overlay opens/updates.
+   * Call clearOverlayExclusions() when all overlays close. */
+  async setOverlayExclusions(
+    rects: Array<{ x: number; y: number; width: number; height: number }>,
+  ) {
+    return await invoke("set_browser_overlay_exclusions", { rects });
+  },
+
+  /** Clear all overlay exclusion rectangles from the browser WRY. */
+  async clearOverlayExclusions() {
+    return await invoke("clear_browser_overlay_exclusions");
+  },
+
+  /** Diagnostic: measure actual HWND geometry and run TEST_A (full exclusion). */
+  async diagnoseBrowserExclusion(): Promise<unknown> {
+    return await invoke("diagnose_browser_exclusion");
+  },
+
+  /** Restore full browser WRY region after diagnostic tests. */
+  async restoreBrowserFullRegion(): Promise<string> {
+    return (await invoke("restore_browser_full_region")) as string;
+  },
 };
 
 export const browserCommands = browser;

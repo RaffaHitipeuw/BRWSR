@@ -194,9 +194,25 @@ fn enumerate_hwnd_tree(main_window: &tauri::Window, label: &str) {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
+/// Enforce sibling z-order invariant: React UI WRY must be ABOVE Browser WRY.
+///
+/// Uses geometry-based classification:
+/// Z-order invariant: Browser WRY must be above React WRY (browser z < react z).
+/// Lower z-index means visually higher on screen.
+///
+/// Classification by geometry:
+///   - React UI WRY: top-Y ≈ main window top, spans full client height
+///   - Browser WRY: top-Y ≈ UI_HEIGHT offset, smaller height
+///
+/// Applies SetWindowPos(browser_hwnd, HWND_TOP) so browser renders above React UI.
+/// Since browser WRY starts at y=UI_HEIGHT and React WRY covers the full window,
+/// they do NOT geometrically overlap — browser shows through its non-UI area.
+/// React UI (with transparent title bar area) overlays the top of the browser content.
+#[cfg(target_os = "windows")]
+fn ensure_browser_above_react(main_window: &tauri::Window) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindow, SetWindowPos, GW_CHILD, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, HWND_TOP,
+        GetWindow, GetWindowRect, SetWindowPos, GW_CHILD, GW_HWNDPREV,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, HWND_TOP,
     };
 
     let main_hwnd = match main_window.hwnd() {
@@ -204,73 +220,111 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
         Err(_) => return,
     };
 
-    log::info!("[ZORDER] === ensure_react_ui_above_browser: BEFORE ===");
-    enumerate_hwnd_tree(main_window, "before-fix");
-
-    // Walk all children to find WRY_WEBVIEW containers.
-    // GW_CHILD = topmost; GW_HWNDPREV = previous (toward bottom).
-    let mut child = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
-        Ok(h) if !h.is_invalid() => h,
-        _ => return,
-    };
-
-    let mut oldest_wry_child = child;
-    let mut z_idx = 0usize;
-    let mut oldest_wry_z = 0usize;
-    let mut youngest_wry_child = child;
-    let mut youngest_wry_z = 0usize;
-    let mut wry_children: Vec<(usize, windows::Win32::Foundation::HWND, String)> = Vec::new();
-
-    loop {
-        let mut class_buf = [0u16; 64];
-        let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(child, &mut class_buf) };
-        if len > 0 {
-            let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
-            log::info!(
-                "[ZORDER]   child[{}] hwnd={:?} class=\"{}\"",
-                z_idx, child.0, class_name
-            );
-            if class_name == "WRY_WEBVIEW" {
-                wry_children.push((z_idx, child, class_name.clone()));
-                oldest_wry_child = child;
-                oldest_wry_z = z_idx;
-                youngest_wry_child = child;
-                youngest_wry_z = z_idx;
+    // ── Helper: z-index of target among main's direct children ─────────────────
+    // GW_CHILD = topmost (z=0). GW_HWNDPREV = previous sibling (higher z).
+    fn z_index(main: windows::Win32::Foundation::HWND, target: windows::Win32::Foundation::HWND) -> Option<usize> {
+        let first = unsafe { GetWindow(main, GW_CHILD) }.ok()?;
+        if first.is_invalid() { return None; }
+        if first == target { return Some(0); }
+        let mut current = first;
+        let mut idx = 0usize;
+        loop {
+            match unsafe { GetWindow(current, GW_HWNDPREV) } {
+                Ok(prev) if !prev.is_invalid() && prev != current => {
+                    current = prev;
+                    idx += 1;
+                    if current == target { return Some(idx); }
+                }
+                _ => return None,
             }
         }
-        match unsafe { GetWindow(child, GW_HWNDPREV) } {
-            Ok(next) if !next.is_invalid() && next != child => { child = next; z_idx += 1; }
-            _ => break,
-        }
     }
 
+    fn wry_rect(h: windows::Win32::Foundation::HWND) -> windows::Win32::Foundation::RECT {
+        let mut r = windows::Win32::Foundation::RECT::default();
+        unsafe { let _ = GetWindowRect(h, &mut r); }
+        r
+    }
+
+    // ── Step 1: Classify WRY windows by geometry ──────────────────────────────
+    let react_hwnd = find_react_ui_wry(main_hwnd);
+    let browser_hwnd = find_browser_wry_by_geometry(main_hwnd);
+
     log::info!(
-        "[ZORDER] Found {} WRY_WEBVIEW children: oldest at z={} hwnd={:?}, youngest at z={} hwnd={:?}",
-        wry_children.len(), oldest_wry_z, oldest_wry_child.0,
-        youngest_wry_z, youngest_wry_child.0
+        "[ZORDER] Classification: react={:?} browser={:?}",
+        react_hwnd.map(|h| format!("0x{:X}", h.0 as isize)),
+        browser_hwnd.map(|h| format!("0x{:X}", h.0 as isize)),
     );
 
-    // Approach: bring the OLDEST WRY_WEBVIEW (React UI) to the TOP.
-    log::info!(
-        "[ZORDER] Bringing oldest WRY_WEBVIEW (z={}, hwnd={:?}) to HWND_TOP",
-        oldest_wry_z, oldest_wry_child.0
-    );
-    unsafe {
-        let r = SetWindowPos(
-            oldest_wry_child,
-            Some(HWND_TOP),
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    // ── Step 2: Log BEFORE state ─────────────────────────────────────────────
+    if let Some(rh) = react_hwnd {
+        let r_rect = wry_rect(rh);
+        let r_z = z_index(main_hwnd, rh).unwrap_or(usize::MAX);
+        log::info!(
+            "[ZORDER] BEFORE: React WRY: hwnd=0x{:X} rect=({},{} {},{}) z={}",
+            rh.0 as isize, r_rect.left, r_rect.top, r_rect.right, r_rect.bottom, r_z
         );
-        log::info!("[ZORDER] SetWindowPos result: {:?}", r.is_ok());
+    } else {
+        log::warn!("[ZORDER] No React UI WRY found");
     }
 
-    log::info!("[ZORDER] === ensure_react_ui_above_browser: AFTER ===");
-    enumerate_hwnd_tree(main_window, "after-fix");
+    if let Some(bh) = browser_hwnd {
+        let b_rect = wry_rect(bh);
+        let b_z = z_index(main_hwnd, bh).unwrap_or(usize::MAX);
+        log::info!(
+            "[ZORDER] BEFORE: Browser WRY: hwnd=0x{:X} rect=({},{} {},{}) z={}",
+            bh.0 as isize, b_rect.left, b_rect.top, b_rect.right, b_rect.bottom, b_z
+        );
+    } else {
+        log::info!("[ZORDER] BEFORE: Browser WRY: not yet created");
+    }
+
+    // ── Step 3: Apply fix — bring Browser WRY to HWND_TOP ────────────────────
+    if let Some(bh) = browser_hwnd {
+        log::info!(
+            "[ZORDER] Fix: SetWindowPos(browser=0x{:X}, HWND_TOP)",
+            bh.0 as isize
+        );
+        let result = unsafe {
+            SetWindowPos(
+                bh,
+                Some(HWND_TOP),
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        };
+        log::info!("[ZORDER] SetWindowPos result: {:?}", result.is_ok());
+    } else {
+        log::info!("[ZORDER] No browser WRY — nothing to reorder");
+    }
+
+    // ── Step 4: Verify invariant ──────────────────────────────────────────────
+    let after_react_z = react_hwnd.and_then(|rh| z_index(main_hwnd, rh)).unwrap_or(usize::MAX);
+    let after_browser_z = browser_hwnd.and_then(|bh| z_index(main_hwnd, bh)).unwrap_or(usize::MAX);
+
+    log::info!(
+        "[ZORDER] AFTER: React WRY: hwnd=0x{:X} z={}  Browser WRY: hwnd=0x{:X} z={}",
+        react_hwnd.map(|h| h.0 as isize).unwrap_or(0), after_react_z,
+        browser_hwnd.map(|h| h.0 as isize).unwrap_or(0), after_browser_z
+    );
+
+    // Invariant: browser z < react z (browser is above/react is below)
+    let invariant_ok = browser_hwnd.is_none() || after_browser_z < after_react_z;
+    if invariant_ok {
+        log::info!(
+            "[ZORDER] ✓ INVARIANT SATISFIED: Browser WRY (z={}) is ABOVE React WRY (z={})",
+            after_browser_z, after_react_z
+        );
+    } else {
+        log::error!(
+            "[ZORDER] ✗ INVARIANT FAILED: Browser WRY (z={}) is NOT above React WRY (z={})!",
+            after_browser_z, after_react_z
+        );
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn ensure_react_ui_above_browser(main_window: &tauri::Window) {}
+fn ensure_browser_above_react(main_window: &tauri::Window) {}
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -283,8 +337,144 @@ use tauri::{
 };
 
 mod startup_profiler;
+mod forensic;
+use forensic::{find_react_ui_wry, find_browser_wry_by_geometry, find_render_surface};
 use startup_profiler::StartupProfiler;
 
+/// A single overlay exclusion rectangle, in browser WRY local coordinates (physical pixels).
+/// Coordinates are relative to the browser WRY window origin.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct OverlayRect {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+/// Shared state for browser overlay exclusion rectangles.
+struct BrowserOverlayState {
+    /// Active exclusion rectangles, in browser WRY local coordinates.
+    rects: Mutex<Vec<OverlayRect>>,
+}
+
+impl Default for BrowserOverlayState {
+    fn default() -> Self {
+        Self { rects: Mutex::new(Vec::new()) }
+    }
+}
+
+/// Applies the compound exclusion region to the browser WRY.
+///
+/// Region = full browser WRY client area MINUS all active overlay exclusion rectangles.
+/// Takes the browser WRY handle and its physical bounds (from GetWindowRect).
+#[cfg(target_os = "windows")]
+fn apply_browser_exclusion_region(
+    browser_wry_h: windows::Win32::Foundation::HWND,
+    browser_rect: &windows::Win32::Foundation::RECT,
+    overlays: &[OverlayRect],
+) {
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn, HRGN};
+
+    let w = browser_rect.right - browser_rect.left;
+    let h = browser_rect.bottom - browser_rect.top;
+
+    log::info!(
+        "[OVERLAY] apply_browser_exclusion_region: browser={:x} size={}x{} count={}",
+        browser_wry_h.0 as isize, w, h, overlays.len()
+    );
+
+    // Step 1: create the full browser region
+    let full_region = unsafe { CreateRectRgn(0, 0, w, h) };
+    if full_region.is_invalid() {
+        log::error!("[OVERLAY] CreateRectRgn failed for full browser region");
+        return;
+    }
+
+    // Step 2: subtract each overlay rectangle using raw FFI
+    // Win32 CombineRgn(hdnDest, hdnSrc1, hdnSrc2, fnCombine)
+    // RGN_DIFF = 4: dest = src1 MINUS src2 (set difference)
+    // NOTE: CombineRgn modifies hrgnDest IN-PLACE. We must NOT use the
+    // same HRGN as both dest and src1 when chaining — that would mutate
+    // the accumulated result. Instead, accumulate into a SEPARATE result HRGN.
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CombineRgn(hrgnDest: HRGN, hrgnSrc1: HRGN, hrgnSrc2: HRGN, iMode: i32) -> i32;
+        fn DeleteObject(hObject: HRGN) -> i32;
+    }
+    const RGN_DIFF: i32 = 4;
+
+    // Start with a copy of the full region as our result
+    // Use full_region as both src1 and src2 of a NULL combine → creates a copy
+    let result_region = unsafe { CreateRectRgn(0, 0, 0, 0) };
+    if result_region.is_invalid() {
+        log::error!("[OVERLAY] CreateRectRgn failed for result region");
+        unsafe { DeleteObject(full_region) };
+        return;
+    }
+    // CombineRgn(result, NULL, NULL, RGN_AND) → result = NULL
+    // CombineRgn(result, full_region, NULL, RGN_COPY) → result = full_region (copy)
+    // Use RGN_COPY mode (2) to copy full_region into result_region
+    let copy_result = unsafe { CombineRgn(result_region, full_region, HRGN::default(), 2) };
+    if copy_result < 0 {
+        log::error!("[OVERLAY] Failed to copy full region: {}", copy_result);
+        unsafe { DeleteObject(full_region); DeleteObject(result_region) };
+        return;
+    }
+    for ov in overlays {
+        // Clamp overlay to browser bounds
+        let ox1 = ov.x.max(0).min(w);
+        let oy1 = ov.y.max(0).min(h);
+        let ox2 = (ov.x + ov.width).max(0).min(w);
+        let oy2 = (ov.y + ov.height).max(0).min(h);
+        if ox1 >= ox2 || oy1 >= oy2 {
+            continue;
+        }
+        log::info!(
+            "[OVERLAY] exclusion: rect({},{} {},{})",
+            ox1, oy1, ox2, oy2
+        );
+
+        let excl = unsafe { CreateRectRgn(ox1, oy1, ox2, oy2) };
+        if excl.is_invalid() {
+            continue;
+        }
+
+        // result_region = result_region - excl (RGN_DIFF = set difference)
+        let _ = unsafe { CombineRgn(result_region, result_region, excl, RGN_DIFF) };
+        unsafe { DeleteObject(excl); }
+    }
+
+    // Clean up the full_region copy (SetWindowRgn takes ownership of result_region)
+    unsafe { DeleteObject(full_region); }
+
+    // Step 3: apply to browser WRY
+    // Note: SetWindowRgn takes ownership of the HRGN.
+    // SetWindowRgn returns BOOL (non-zero = success).
+    let applied = unsafe { SetWindowRgn(browser_wry_h, Some(result_region), true) };
+    if applied != 0 {
+        log::info!("[OVERLAY] exclusion region applied to browser WRY");
+    } else {
+        log::error!("[OVERLAY] SetWindowRgn failed");
+    }
+}
+
+/// Removes any custom region from the browser WRY, restoring full client area.
+#[cfg(target_os = "windows")]
+fn clear_browser_exclusion_region(
+    browser_wry_h: windows::Win32::Foundation::HWND,
+    browser_rect: &windows::Win32::Foundation::RECT,
+) {
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
+
+    let w = browser_rect.right - browser_rect.left;
+    let h = browser_rect.bottom - browser_rect.top;
+
+    let full_region = unsafe { CreateRectRgn(0, 0, w, h) };
+    if !full_region.is_invalid() {
+        unsafe { SetWindowRgn(browser_wry_h, Some(full_region), true); };
+        log::info!("[OVERLAY] browser region restored to full area");
+    }
+}
 
 
 const UI_HEIGHT: f64 = 88.0;
@@ -1346,7 +1536,300 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Set overlay exclusion rectangles on the browser WRY.
+///
+/// Coordinates are in browser WRY local physical pixels.
+/// Each rect is: { x, y, width, height } relative to browser WRY top-left.
+///
+/// Called from React whenever an overlay opens/updates.
+#[tauri::command]
+fn set_browser_overlay_exclusions(
+    app: tauri::AppHandle,
+    // Exclusion rectangles in browser WRY local coordinates (physical pixels).
+    rects: Vec<OverlayRect>,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    use windows::Win32::Foundation::HWND as RawHWND;
 
+    log::info!("[OVERLAY] set exclusions count={}", rects.len());
+    for r in &rects {
+        log::info!("[OVERLAY] rect: x={} y={} w={} h={}", r.x, r.y, r.width, r.height);
+    }
+
+    // Store the overlay rects
+    let state = app.state::<BrowserOverlayState>();
+    {
+        let mut stored = state.rects.lock().unwrap();
+        *stored = rects.clone();
+    }
+
+    // Apply region to browser WRY
+    #[cfg(target_os = "windows")]
+    {
+        let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+        let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+        let main_hwnd = RawHWND(main_hwnd_raw.0);
+
+        if let Some(browser_wry) = find_browser_wry_by_geometry(main_hwnd) {
+            let mut browser_rect = windows::Win32::Foundation::RECT::default();
+            unsafe { let _ = GetWindowRect(browser_wry, &mut browser_rect); };
+
+            apply_browser_exclusion_region(browser_wry, &browser_rect, &rects);
+        } else {
+            log::warn!("[OVERLAY] set_browser_overlay_exclusions: browser WRY not found");
+        }
+    }
+
+    Ok(())
+}
+
+/// Diagnostic: measures all actual HWND geometry and performs controlled exclusion tests.
+///
+/// TEST_A: full = apply exclusion covering the ENTIRE browser WRY → browser should disappear
+/// TEST_B: half = apply exclusion covering upper-left quarter
+/// TEST_C: clear = restore full region
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HwndGeometry {
+    pub hwnd: String,
+    pub rect_screen: String,   // "l,t r,b"
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeometryDiagnostic {
+    pub main_hwnd: String,
+    pub main_rect_screen: String,
+    pub main_client_rect: String,
+    pub scale_factor: f64,
+    pub react_wry: Option<HwndGeometry>,
+    pub browser_wry: Option<HwndGeometry>,
+    pub browser_client_rect: Option<String>,
+    pub test_result: Option<String>,
+}
+
+#[tauri::command]
+fn diagnose_browser_exclusion(app: tauri::AppHandle) -> Result<GeometryDiagnostic, String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetClientRect, IsWindow};
+    use windows::Win32::Foundation::{HWND as RawHWND, RECT};
+
+    let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+    let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let main_hwnd = RawHWND(main_hwnd_raw.0);
+    let scale = main_window.scale_factor().unwrap_or(1.0);
+
+    fn rect_to_str(r: &RECT) -> String {
+        format!("({},{} {},{})", r.left, r.top, r.right, r.bottom)
+    }
+
+    fn hwr(h: windows::Win32::Foundation::HWND) -> HwndGeometry {
+        let mut r = RECT::default();
+        unsafe { let _ = GetWindowRect(h, &mut r); };
+        HwndGeometry {
+            hwnd: format!("0x{:X}", h.0 as isize),
+            rect_screen: rect_to_str(&r),
+            width: r.right - r.left,
+            height: r.bottom - r.top,
+        }
+    }
+
+    // Main window
+    let mut main_rect = RECT::default();
+    let mut main_cr = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(main_hwnd, &mut main_rect);
+        let _ = GetClientRect(main_hwnd, &mut main_cr);
+    }
+
+    // React WRY
+    let react_wry = find_react_ui_wry(main_hwnd).map(|h| hwrect(h));
+
+    // Browser WRY
+    let browser_wry_opt = find_browser_wry_by_geometry(main_hwnd);
+
+    let mut browser_wry_rect_str = None;
+    let mut browser_client_rect_str = None;
+    let mut test_result = None;
+
+    if let Some(browser_wry) = browser_wry_opt {
+        let mut br = RECT::default();
+        let mut bcr = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(browser_wry, &mut br);
+            let _ = GetClientRect(browser_wry, &mut bcr);
+        }
+        browser_wry_rect_str = Some(rect_to_str(&br));
+        browser_client_rect_str = Some(rect_to_str(&bcr));
+
+        let bw = br.right - br.left;
+        let bh = br.bottom - br.top;
+        let bcw = bcr.right - bcr.left;
+        let bch = bcr.bottom - bcr.top;
+
+        // TEST A: full exclusion — cover the ENTIRE browser WRY
+        // If SetWindowRgn works correctly, the browser should become entirely invisible
+        log::info!("[TEST_A] Full browser exclusion: {}x{}", bw, bh);
+
+        let full_region = unsafe { windows::Win32::Graphics::Gdi::CreateRectRgn(0, 0, bw, bh) };
+        if !full_region.is_invalid() {
+            // Subtracting full region from full region = empty
+            #[link(name = "gdi32")]
+            extern "system" {
+                fn CombineRgn(hrgnDest: windows::Win32::Graphics::Gdi::HRGN,
+                                hrgnSrc1: windows::Win32::Graphics::Gdi::HRGN,
+                                hrgnSrc2: windows::Win32::Graphics::Gdi::HRGN,
+                                iMode: i32) -> i32;
+            }
+            const RGN_DIFF: i32 = 4;
+            // full - full = empty region
+            let empty_region = unsafe { windows::Win32::Graphics::Gdi::CreateRectRgn(0, 0, 0, 0) };
+            let _ = unsafe { CombineRgn(empty_region, full_region, full_region, RGN_DIFF) };
+
+            let applied = unsafe {
+                windows::Win32::Graphics::Gdi::SetWindowRgn(browser_wry, Some(empty_region), true)
+            };
+            test_result = Some(format!(
+                "TEST_A: SetWindowRgn full-empty result={} browser_wry={:X} window={} client={}",
+                applied != 0, browser_wry.0 as isize, rect_to_str(&br), rect_to_str(&bcr)
+            ));
+            log::info!("[TEST_A] Result: {}", test_result.as_ref().unwrap());
+        }
+
+        // Also compute derived geometry
+        log::info!("[COORD] === ACTUAL GEOMETRY ===");
+        log::info!("[COORD] main_hwnd={:X} rect={} client={} scale={}",
+            main_hwnd.0 as isize, rect_to_str(&main_rect), rect_to_str(&main_cr), scale);
+        if let Some(rw) = react_wry.as_ref() {
+            log::info!("[COORD] react_wry={} rect={}", rw.hwnd, rw.rect_screen);
+        }
+        log::info!("[COORD] browser_wry={:X} window={} client={}",
+            browser_wry.0 as isize,
+            browser_wry_rect_str.as_ref().unwrap_or(&"?".to_string()),
+            browser_client_rect_str.as_ref().unwrap_or(&"?".to_string()));
+        log::info!("[COORD] === END GEOMETRY ===");
+    } else {
+        test_result = Some("browser_wry not found".to_string());
+        log::warn!("[TEST_A] browser_wry not found");
+    }
+
+    Ok(GeometryDiagnostic {
+        main_hwnd: format!("0x{:X}", main_hwnd.0 as isize),
+        main_rect_screen: rect_to_str(&main_rect),
+        main_client_rect: rect_to_str(&main_cr),
+        scale_factor: scale,
+        react_wry,
+        browser_wry: browser_wry_opt.map(|h| hwrect(h)),
+        browser_client_rect: browser_client_rect_str,
+        test_result,
+    })
+}
+
+/// Helper: get window rect as HwndGeometry
+fn hwrect(h: windows::Win32::Foundation::HWND) -> HwndGeometry {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = windows::Win32::Foundation::RECT::default();
+    unsafe { let _ = GetWindowRect(h, &mut r); };
+    HwndGeometry {
+        hwnd: format!("0x{:X}", h.0 as isize),
+        rect_screen: format!("({},{} {},{})", r.left, r.top, r.right, r.bottom),
+        width: r.right - r.left,
+        height: r.bottom - r.top,
+    }
+}
+
+/// Restore full browser WRY region (after diagnostic tests).
+#[tauri::command]
+fn restore_browser_full_region(app: tauri::AppHandle) -> Result<String, String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, GetClientRect};
+    use windows::Win32::Foundation::HWND as RawHWND;
+
+    let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+    let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let main_hwnd = RawHWND(main_hwnd_raw.0);
+
+    if let Some(browser_wry) = find_browser_wry_by_geometry(main_hwnd) {
+        let mut cr = windows::Win32::Foundation::RECT::default();
+        unsafe { let _ = GetClientRect(browser_wry, &mut cr); };
+        let cw = cr.right - cr.left;
+        let ch = cr.bottom - cr.top;
+
+        let full = unsafe { windows::Win32::Graphics::Gdi::CreateRectRgn(0, 0, cw.max(1), ch.max(1)) };
+        if !full.is_invalid() {
+            let applied = unsafe { windows::Win32::Graphics::Gdi::SetWindowRgn(browser_wry, Some(full), true) };
+            let msg = format!(
+                "restored: browser_wry={:X} client_size={}x{} result={}",
+                browser_wry.0 as isize, cw, ch, applied != 0
+            );
+            log::info!("[REGION] {}", msg);
+            return Ok(msg);
+        }
+    }
+    Err("browser_wry not found".to_string())
+}
+
+/// Clear all overlay exclusion rectangles, restoring the full browser WRY region.
+#[tauri::command]
+fn clear_browser_overlay_exclusions(app: tauri::AppHandle) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    use windows::Win32::Foundation::HWND as RawHWND;
+
+    log::info!("[OVERLAY] clear exclusions");
+
+    // Clear stored rects
+    let state = app.state::<BrowserOverlayState>();
+    {
+        let mut stored = state.rects.lock().unwrap();
+        stored.clear();
+    }
+
+    // Restore full region
+    #[cfg(target_os = "windows")]
+    {
+        let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+        let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+        let main_hwnd = RawHWND(main_hwnd_raw.0);
+
+        if let Some(browser_wry) = find_browser_wry_by_geometry(main_hwnd) {
+            let mut browser_rect = windows::Win32::Foundation::RECT::default();
+            unsafe { let _ = GetWindowRect(browser_wry, &mut browser_rect); };
+
+            clear_browser_exclusion_region(browser_wry, &browser_rect);
+        }
+    }
+
+    Ok(())
+}
+
+/// Re-applies stored overlay exclusions to the browser WRY.
+/// Called after browser bounds change (e.g., window resize).
+fn reapply_overlay_exclusions(app: &tauri::AppHandle) {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    use windows::Win32::Foundation::HWND as RawHWND;
+
+    let state = app.state::<BrowserOverlayState>();
+    let rects = state.rects.lock().unwrap().clone();
+
+    if rects.is_empty() {
+        return;
+    }
+
+    let main_window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => return,
+    };
+    let main_hwnd_raw = match main_window.hwnd() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let main_hwnd = RawHWND(main_hwnd_raw.0);
+
+    if let Some(browser_wry) = find_browser_wry_by_geometry(main_hwnd) {
+        let mut browser_rect = windows::Win32::Foundation::RECT::default();
+        unsafe { let _ = GetWindowRect(browser_wry, &mut browser_rect); };
+        log::info!("[OVERLAY] reapplying {} exclusions after resize", rects.len());
+        apply_browser_exclusion_region(browser_wry, &browser_rect, &rects);
+    }
+}
 
 #[tauri::command]
 async fn navigate_browser(
@@ -1397,6 +1880,10 @@ async fn navigate_browser(
                 )
                 .map_err(|e| format!("Failed to create browser child webview: {}", e))?;
 
+            log::info!(
+                "[NAVIGATE] add_child succeeded: bounds=({:.0},{:.0}) size=({:.0}x{:.0})",
+                0.0, UI_HEIGHT, main_logical_width, browser_height
+            );
             *browser_wv = Some(browser_webview);
             true
         } else {
@@ -1407,14 +1894,51 @@ async fn navigate_browser(
             false
         }
     };
+    // ── DIAGNOSTIC: Delayed browser WRY discovery ────────────────────────────
+    // Logs browser WRY appearance at intervals after add_child.
+    // Uses std::thread::spawn so it does not block the async function.
+    let browser_created_diag = browser_created;
+    let main_hwnd_diag = main_window.hwnd().ok().map(|h| h.0 as isize);
+    if browser_created_diag {
+        if let Some(raw_hwnd) = main_hwnd_diag {
+            // DIAGNOSTIC LOGGING ONLY — no SetWindowPos or SetWindowRgn here.
+            // Observe at t=0 (immediate), 50ms, 200ms, 500ms after add_child.
+            std::thread::spawn(move || {
+                for (delay_ms, label) in [(0, "immediate"), (50, "+50ms"), (200, "+200ms"), (500, "+500ms")] {
+                    if delay_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    }
+                    let main_h = windows::Win32::Foundation::HWND(raw_hwnd as *mut std::ffi::c_void);
+                    let wry = forensic::find_browser_wry_by_geometry(main_h);
+                    if let Some(wry_h) = wry {
+                        let mut r = windows::Win32::Foundation::RECT::default();
+                        let visible = unsafe {
+                            windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(wry_h).as_bool()
+                        };
+                        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(wry_h, &mut r) };
+                        let render = forensic::find_render_surface(wry_h);
+                        let render_rect = render.map(|(rh, _, _)| {
+                            let mut rr = windows::Win32::Foundation::RECT::default();
+                            let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(rh, &mut rr) };
+                            format!("0x{:X} rect=({},{} {},{})", rh.0 as isize, rr.left, rr.top, rr.right, rr.bottom)
+                        }).unwrap_or_else(|| "none".to_string());
+                        eprintln!(
+                            "[BROWSER_DIAG] {} browser_wry=0x{:X} rect=({},{} {},{}) visible={} render={}",
+                            label, wry_h.0 as isize, r.left, r.top, r.right, r.bottom, visible, render_rect
+                        );
+                    } else {
+                        eprintln!("[BROWSER_DIAG] {} browser_wry=NOT FOUND (by geometry)", label);
+                    }
+                }
+            });
+        }
+    }
 
-    // Fix z-order: ensure React UI container is above browser container.
-    // Wry's add_child always places new children at HWND_TOP, which puts the browser
-    // ABOVE the React UI. This reorders the browser container to be below React UI.
+    // After browser creation, ensure correct z-order: browser above react.
+    // enumerate_hwnd_tree is diagnostic-only (read-only).
     if browser_created {
-        log::info!("[ZORDER] navigate_browser: browser newly created, calling ensure_react_ui_above_browser");
         enumerate_hwnd_tree(&main_window, "navigate-before-fix");
-        ensure_react_ui_above_browser(&main_window);
+        ensure_browser_above_react(&main_window);
     }
 
     lifecycle.mark_active();
@@ -1624,9 +2148,9 @@ async fn ensure_webview_active(app: tauri::AppHandle) -> Result<bool, String> {
         }
     };
 
-    // Fix z-order: ensure React UI container is above browser container.
+    // Ensure correct z-order after browser creation: browser above react.
     if browser_created {
-        ensure_react_ui_above_browser(&main_window);
+        ensure_browser_above_react(&main_window);
     }
 
     lifecycle.mark_active();
@@ -2062,7 +2586,7 @@ fn restore_tab(app: tauri::AppHandle, #[allow(non_snake_case)] tabId: String) ->
     };
 
     if browser_created {
-        ensure_react_ui_above_browser(&main_window);
+        ensure_browser_above_react(&main_window);
     }
 
     lifecycle.mark_active();
@@ -3334,6 +3858,27 @@ fn setup_panic_handler() {
     log::info!("[STARTUP] Panic handler installed. Log path: {:?}", panic_log_path_for_log);
 }
 
+// ── Forensic paint hierarchy commands ─────────────────────────────────────────
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn dump_paint_hierarchy(app: tauri::AppHandle) -> Result<String, String> {
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_hwnd = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let raw = main_hwnd.0 as isize;
+    forensic::dump_webview_paint_hierarchy(raw, "MANUAL_TRIGGER");
+    Ok(format!("Paint hierarchy written to forensic log for main hwnd=0x{:X}", raw))
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn run_zorder_tests(app: tauri::AppHandle) -> Result<String, String> {
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_hwnd = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let raw = main_hwnd.0 as isize;
+    forensic::run_zorder_tests(raw);
+    Ok(format!("Z-order tests complete for main hwnd=0x{:X}", raw))
+}
+
 fn main() {
 
     setup_panic_handler();
@@ -3345,6 +3890,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let benchmark_mode = args.get(1).map(|s| s.as_str()) == Some("--benchmark");
+    let test_region_mode = args.get(1).map(|s| s.as_str()) == Some("--test-rgn");
     BENCHMARK_MODE.store(benchmark_mode, std::sync::atomic::Ordering::SeqCst);
 
     log::info!("Starting EduOS Browser v{} - Research Edition", env!("CARGO_PKG_VERSION"));
@@ -3352,6 +3898,9 @@ fn main() {
     log::info!("Storage = Raw observations. Labels = Derived (analysis layer).");
     if benchmark_mode {
         log::info!("BENCHMARK MODE: Harness will auto-start on frontend mount");
+    }
+    if test_region_mode {
+        log::info!("TEST MODE: Region exclusion diagnostic will auto-run after WebView creation");
     }
 
     
@@ -3386,8 +3935,9 @@ fn main() {
             sessions: Mutex::new(HashMap::new()),
             insertion_order: Mutex::new(Vec::new()),
         })
-        .manage(CachedSystem::new()) 
-        .manage(Mutex::new(StartupProfiler::new())) 
+        .manage(CachedSystem::new())
+        .manage(Mutex::new(StartupProfiler::new()))
+        .manage(BrowserOverlayState::default())
         .invoke_handler(tauri::generate_handler![
             
             minimize_window,
@@ -3448,9 +3998,25 @@ fn main() {
             get_lifecycle_event_stats,
             clear_lifecycle_events,
             run_benchmark_workload,
+
+            #[cfg(target_os = "windows")]
+            set_browser_overlay_exclusions,
+            #[cfg(target_os = "windows")]
+            clear_browser_overlay_exclusions,
+            #[cfg(target_os = "windows")]
+            diagnose_browser_exclusion,
+            #[cfg(target_os = "windows")]
+            restore_browser_full_region,
+
+            #[cfg(target_os = "windows")]
+            dump_paint_hierarchy,
+            #[cfg(target_os = "windows")]
+            run_zorder_tests,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Clone again for the test_region_mode thread (handle is moved into on_window_event).
+            let handle_for_test = if test_region_mode { Some(handle.clone()) } else { None };
 
             
             let profiler = app.state::<Mutex<StartupProfiler>>();
@@ -3497,8 +4063,8 @@ fn main() {
             disable_main_window_rounded_corners(&main_window);
             disable_main_window_rounded_corners(&main_window);
 
-            // Clone for the focus event handler which needs to call ensure_react_ui_above_browser.
-            let main_window_for_zorder = main_window.clone();
+            // Clone for the Resized event handler which updates browser bounds.
+            let main_window_for_resize = main_window.clone();
 
             p.phase_start("window_event_listeners");
 
@@ -3510,9 +4076,211 @@ fn main() {
                         let _ = wv.close();
                     };
                 }
-                // On main window gaining focus: ensure React UI stays above browser.
-                tauri::WindowEvent::Focused(true) => {
-                    ensure_react_ui_above_browser(&main_window_for_zorder.as_ref().window());
+                // On resize: recalculate and apply browser WebView bounds.
+                // DIAGNOSTIC TEST SEQUENCE:
+                // Resize 1: TEST A — apply FULL exclusion → browser should disappear
+                // Resize 2: restore full region
+                // Resize 3: TEST B — upper-left quarter exclusion
+                // Resize 4: restore full region
+                // After that: normal behavior
+                tauri::WindowEvent::Resized(_new_size) => {
+                    use tauri::WebviewWindow;
+                    use windows::Win32::Foundation::HWND as RawHWND2;
+                    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+                    use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn};
+
+                    // Static counter for diagnostic test sequence
+                    use std::sync::atomic::{AtomicU32, Ordering};
+                    static RESIZE_COUNT: AtomicU32 = AtomicU32::new(0);
+                    let resize_count = RESIZE_COUNT.fetch_add(1, Ordering::SeqCst);
+
+                    let scale_f = main_window_for_resize.scale_factor().unwrap_or(1.0);
+                    let main_size = main_window_for_resize.inner_size().unwrap_or(*_new_size);
+                    let main_logical_height = main_size.height as f64 / scale_f;
+                    let browser_logical_height = main_logical_height - UI_HEIGHT;
+                    let browser_logical_width = main_size.width as f64 / scale_f;
+                    let bounds_valid = browser_logical_height > 0.0;
+
+                    let browser_state = handle.state::<BrowserWebview>();
+                    let wv_guard = browser_state.webview.lock().unwrap();
+                    if let Some(ref wv) = *wv_guard {
+                        let bounds = tauri::Rect {
+                            position: LogicalPosition::new(0.0, UI_HEIGHT).into(),
+                            size: LogicalSize::new(browser_logical_width, browser_logical_height).into(),
+                        };
+                        if wv.set_bounds(bounds).is_ok() && bounds_valid {
+                            if let Some(raw) = main_window_for_resize.hwnd().ok() {
+                                let main_hwnd = RawHWND2(raw.0);
+
+                                // Log actual geometry
+                                let mut main_rect = windows::Win32::Foundation::RECT::default();
+                                unsafe { let _ = GetWindowRect(main_hwnd, &mut main_rect); };
+                                log::info!(
+                                    "[COORD] === ACTUAL GEOMETRY (resize #{}) ===",
+                                    resize_count + 1
+                                );
+                                log::info!(
+                                    "[COORD] main_hwnd=0x{:X} window=({},{} {},{}) scale={}",
+                                    main_hwnd.0 as isize,
+                                    main_rect.left, main_rect.top, main_rect.right, main_rect.bottom,
+                                    scale_f
+                                );
+                                log::info!(
+                                    "[COORD] main_size: logical=({:.0}x{:.0}) physical=({}x{})",
+                                    main_size.width as f64 / scale_f,
+                                    main_logical_height,
+                                    main_size.width, main_size.height
+                                );
+                                log::info!(
+                                    "[COORD] UI_HEIGHT={} browser_bounds: ({:.0},{:.0}) size=({:.0}x{:.0})",
+                                    UI_HEIGHT, 0.0, UI_HEIGHT, browser_logical_width, browser_logical_height
+                                );
+
+                                if let Some(react_wry_h) = find_react_ui_wry(main_hwnd) {
+                                    let mut rr = windows::Win32::Foundation::RECT::default();
+                                    unsafe { let _ = GetWindowRect(react_wry_h, &mut rr); };
+                                    log::info!(
+                                        "[COORD] react_wry=0x{:X} window=({},{} {},{})",
+                                        react_wry_h.0 as isize, rr.left, rr.top, rr.right, rr.bottom
+                                    );
+                                }
+
+                                if let Some(browser_wry_h) = find_browser_wry_by_geometry(main_hwnd) {
+                                    let mut br = windows::Win32::Foundation::RECT::default();
+                                    unsafe { let _ = GetWindowRect(browser_wry_h, &mut br); };
+                                    let bw = br.right - br.left;
+                                    let bh = br.bottom - br.top;
+                                    log::info!(
+                                        "[COORD] browser_wry=0x{:X} window=({},{} {},{}) size={}x{}",
+                                        browser_wry_h.0 as isize,
+                                        br.left, br.top, br.right, br.bottom,
+                                        bw, bh
+                                    );
+                                    log::info!("[COORD] === END GEOMETRY ===");
+
+                                    // DIAGNOSTIC TEST SEQUENCE
+                                    match resize_count {
+                                        0 => {
+                                            // TEST A: full exclusion — empty region on browser WRY
+                                            // If this works, ENTIRE browser should disappear
+                                            log::info!(
+                                                "[TEST_A] Applying FULL exclusion: browser_wry=0x{:X} size={}x{}",
+                                                browser_wry_h.0 as isize, bw, bh
+                                            );
+
+                                            // Empty region = full browser rect minus full browser rect
+                                            let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                            let empty_r = unsafe { CreateRectRgn(0, 0, 0, 0) };
+
+                                            #[link(name = "gdi32")]
+                                            extern "system" {
+                                                fn CombineRgn(
+                                                    hrgnDest: windows::Win32::Graphics::Gdi::HRGN,
+                                                    hrgnSrc1: windows::Win32::Graphics::Gdi::HRGN,
+                                                    hrgnSrc2: windows::Win32::Graphics::Gdi::HRGN,
+                                                    iMode: i32,
+                                                ) -> i32;
+                                            }
+                                            const RGN_DIFF: i32 = 4;
+
+                                            let _ = unsafe { CombineRgn(empty_r, full_r, full_r, RGN_DIFF) };
+                                            let applied = unsafe {
+                                                SetWindowRgn(browser_wry_h, Some(empty_r), true)
+                                            };
+                                            log::info!(
+                                                "[TEST_A] SetWindowRgn(empty) result={} (0=fail, 1=ok)",
+                                                applied != 0
+                                            );
+                                            log::info!(
+                                                "[TEST_A] EXPECTED: Entire browser area should now be BLANK (transparent)"
+                                            );
+                                        }
+                                        1 => {
+                                            // Restore full region
+                                            log::info!("[TEST_A] Restoring full browser region");
+                                            let full_r = unsafe { CreateRectRgn(0, 0, bw.max(1), bh.max(1)) };
+                                            if !full_r.is_invalid() {
+                                                let applied = unsafe {
+                                                    SetWindowRgn(browser_wry_h, Some(full_r), true)
+                                                };
+                                                log::info!(
+                                                    "[TEST_A] Full region restored: SetWindowRgn result={}",
+                                                    applied != 0
+                                                );
+                                                log::info!(
+                                                    "[TEST_A] EXPECTED: Browser should now show content normally"
+                                                );
+                                            }
+                                        }
+                                        2 => {
+                                            // TEST B: upper-left quarter exclusion
+                                            let hw = bw / 2;
+                                            let hh = bh / 2;
+                                            log::info!(
+                                                "[TEST_B] Applying UPPER-LEFT QUARTER exclusion: (0,0 {}x{})",
+                                                hw, hh
+                                            );
+
+                                            // Full - upper_left = lower_right visible
+                                            let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                            let upper_left = unsafe { CreateRectRgn(0, 0, hw, hh) };
+
+                                            #[link(name = "gdi32")]
+                                            extern "system" {
+                                                fn CombineRgn(
+                                                    hrgnDest: windows::Win32::Graphics::Gdi::HRGN,
+                                                    hrgnSrc1: windows::Win32::Graphics::Gdi::HRGN,
+                                                    hrgnSrc2: windows::Win32::Graphics::Gdi::HRGN,
+                                                    iMode: i32,
+                                                ) -> i32;
+                                            }
+                                            const RGN_DIFF: i32 = 4;
+
+                                            let _ = unsafe { CombineRgn(full_r, full_r, upper_left, RGN_DIFF) };
+                                            let applied = unsafe {
+                                                SetWindowRgn(browser_wry_h, Some(full_r), true)
+                                            };
+                                            log::info!(
+                                                "[TEST_B] SetWindowRgn(quarter) result={}",
+                                                applied != 0
+                                            );
+                                            log::info!(
+                                                "[TEST_B] EXPECTED: Lower-RIGHT quarter of browser visible, upper-left transparent"
+                                            );
+                                        }
+                                        3 => {
+                                            // Restore full region
+                                            log::info!("[TEST_B] Restoring full browser region");
+                                            let full_r = unsafe { CreateRectRgn(0, 0, bw.max(1), bh.max(1)) };
+                                            if !full_r.is_invalid() {
+                                                let applied = unsafe {
+                                                    SetWindowRgn(browser_wry_h, Some(full_r), true)
+                                                };
+                                                log::info!(
+                                                    "[TEST_B] Full region restored: SetWindowRgn result={}",
+                                                    applied != 0
+                                                );
+                                            }
+                                            log::info!(
+                                                "[DIAG] Test sequence complete. Normal behavior resumes."
+                                            );
+                                        }
+                                        _ => {
+                                            // Normal behavior: reapply overlay exclusions
+                                            reapply_overlay_exclusions(&handle);
+                                        }
+                                    }
+
+                                    // Always reapply overlay exclusions after diagnostic tests
+                                    if resize_count >= 4 {
+                                        reapply_overlay_exclusions(&handle);
+                                    }
+                                } else {
+                                    log::info!("[RESIZE] browser WRY not found");
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {}
             });
@@ -3529,6 +4297,115 @@ fn main() {
 
             log::info!("[STARTUP] NOTE: WebView is created on first navigation");
             log::info!("[STARTUP] Frontend initialization happens in browser process");
+
+            // Auto-trigger diagnostic test sequence if --test-rgn flag was passed.
+            if test_region_mode {
+                log::info!("[TEST] --test-rgn flag detected: scheduling diagnostic test sequence");
+                log::info!("[TEST] Run `npm run tauri dev` without --test-rgn for normal operation");
+                log::info!("[TEST] With --test-rgn: browser WRY will be created and TEST A/B run automatically");
+                let handle_clone = handle_for_test.unwrap();
+                std::thread::spawn(move || {
+                    // Wait for the React WebView frontend to fully initialize (navigates to load itself).
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    log::info!("[TEST] Creating browser WRY via ensure_webview_active...");
+                    // Create the browser WRY by calling ensure_webview_active.
+                    let app_handle = &handle_clone;
+                    use tauri::WebviewWindow;
+                    use windows::Win32::Foundation::HWND as RawHWND2;
+                    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+                    use windows::Win32::Graphics::Gdi::{CreateRectRgn, SetWindowRgn, HRGN};
+
+                    #[link(name = "gdi32")]
+                    extern "system" {
+                        fn CombineRgn(
+                            hrgnDest: HRGN,
+                            hrgnSrc1: HRGN,
+                            hrgnSrc2: HRGN,
+                            iMode: i32,
+                        ) -> i32;
+                    }
+                    const RGN_DIFF: i32 = 4;
+
+                    let result = {
+                        let rt = tokio::runtime::Runtime::new().unwrap();
+                        rt.block_on(ensure_webview_active(handle_clone.clone()))
+                    };
+                    match result {
+                        Ok(_) => {
+                            log::info!("[TEST] Browser WRY created, running diagnostic sequence...");
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+
+                            // Now run the diagnostic: find browser WRY and apply TEST A/B.
+                            if let Some(main_win) = handle_clone.get_window("main") {
+                                if let Ok(main_hwnd_raw) = main_win.hwnd() {
+                                    let main_hwnd = RawHWND2(main_hwnd_raw.0);
+                                    if let Some(browser_wry) = find_browser_wry_by_geometry(main_hwnd) {
+                                        let mut br = windows::Win32::Foundation::RECT::default();
+                                        unsafe { let _ = GetWindowRect(browser_wry, &mut br); };
+                                        let bw = (br.right - br.left).max(1);
+                                        let bh = (br.bottom - br.top).max(1);
+
+                                        log::info!("[TEST_A] Applying FULL exclusion: browser_wry=0x{:X} size={}x{}",
+                                            browser_wry.0 as isize, bw, bh);
+
+                                        // Create full region and subtract full region = empty region
+                                        let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                        let empty_r = unsafe { CreateRectRgn(0, 0, 0, 0) };
+                                        let _ = unsafe { CombineRgn(empty_r, full_r, full_r, RGN_DIFF) };
+                                        let applied = unsafe { SetWindowRgn(browser_wry, Some(empty_r), true) };
+                                        log::info!("[TEST_A] SetWindowRgn(empty) result={} (1=ok)",
+                                            applied != 0);
+                                        log::info!("[TEST_A] EXPECTED: Entire browser area should now be BLANK/transparent");
+
+                                        std::thread::sleep(std::time::Duration::from_secs(4));
+
+                                        // Restore full region
+                                        log::info!("[TEST_A] Restoring full browser region");
+                                        let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                        if !full_r.is_invalid() {
+                                            let applied = unsafe { SetWindowRgn(browser_wry, Some(full_r), true) };
+                                            log::info!("[TEST_A] Full region restored: SetWindowRgn result={}",
+                                                applied != 0);
+                                            log::info!("[TEST_A] EXPECTED: Browser should now show content normally");
+                                        }
+
+                                        std::thread::sleep(std::time::Duration::from_secs(2));
+
+                                        // TEST B: upper-left quarter exclusion
+                                        let hw = bw / 2;
+                                        let hh = bh / 2;
+                                        log::info!("[TEST_B] Applying UPPER-LEFT QUARTER exclusion: (0,0 {}x{})", hw, hh);
+                                        let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                        let ul = unsafe { CreateRectRgn(0, 0, hw, hh) };
+                                        let _ = unsafe { CombineRgn(full_r, full_r, ul, RGN_DIFF) };
+                                        let applied = unsafe { SetWindowRgn(browser_wry, Some(full_r), true) };
+                                        log::info!("[TEST_B] SetWindowRgn(quarter) result={}", applied != 0);
+                                        log::info!("[TEST_B] EXPECTED: Lower-RIGHT quarter visible, upper-left transparent");
+
+                                        std::thread::sleep(std::time::Duration::from_secs(4));
+
+                                        // Restore full region
+                                        log::info!("[TEST_B] Restoring full browser region");
+                                        let full_r = unsafe { CreateRectRgn(0, 0, bw, bh) };
+                                        if !full_r.is_invalid() {
+                                            let applied = unsafe { SetWindowRgn(browser_wry, Some(full_r), true) };
+                                            log::info!("[TEST_B] Full region restored: SetWindowRgn result={}",
+                                                applied != 0);
+                                        }
+
+                                        log::info!("[TEST] Diagnostic test sequence complete.");
+                                    } else {
+                                        log::info!("[TEST] ERROR: Browser WRY not found by geometry");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("[TEST] ERROR: ensure_webview_active failed: {}", e);
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })

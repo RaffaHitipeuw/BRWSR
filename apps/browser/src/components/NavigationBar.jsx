@@ -2,6 +2,12 @@ import { clsx } from "clsx";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTabStore } from "../stores/tabs";
 import { useBookmarksStore } from "../stores/bookmarks";
+import { useBrowserOverlayExclusion } from "../hooks/useBrowserOverlay";
+
+// UI_HEIGHT in physical pixels.
+// This must match the Rust UI_HEIGHT (88 logical) scaled by the window's DPI factor.
+// At scale 1.5: 88 * 1.5 = 132. At scale 1.0: 88. At scale 2.0: 176.
+const UI_HEIGHT_PHYSICAL = 132; // Will be refined from window
 
 function NavButton({ onClick, disabled, title, children }) {
   return (
@@ -13,7 +19,7 @@ function NavButton({ onClick, disabled, title, children }) {
         "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
         disabled
           ? "text-gray-300 cursor-not-allowed"
-          : "text-gray-600 hover:bg-gray-100 active:bg-gray-200"
+          : "text-gray-300 hover:bg-gray-100 active:bg-gray-200"
       )}
     >
       {children}
@@ -22,7 +28,40 @@ function NavButton({ onClick, disabled, title, children }) {
 }
 
 // Menu dropdown component - rendered at document level
-function MenuDropdown({ isOpen, onClose, children }) {
+// When open, reports its bounding rect to Rust to create a "hole" in the browser WRY.
+function MenuDropdown({ isOpen, onClose, children, onBoundsChange }) {
+  const menuRef = useRef(null);
+
+  // Report bounds whenever menu opens or its content changes
+  useEffect(() => {
+    if (!isOpen || !menuRef.current) {
+      onBoundsChange?.(null);
+      return;
+    }
+
+    const reportBounds = () => {
+      if (!menuRef.current) return;
+      const rect = menuRef.current.getBoundingClientRect();
+      // Convert viewport rect to browser WRY local coords:
+      // browser WRY starts at viewport y = UI_HEIGHT_PHYSICAL
+      // so browserLocalY = rect.top - UI_HEIGHT_PHYSICAL
+      onBoundsChange?.({
+        left: rect.left,
+        top: rect.top - UI_HEIGHT_PHYSICAL,
+        width: rect.width,
+        height: rect.height,
+      });
+    };
+
+    // Report immediately
+    reportBounds();
+
+    // Also report on resize (content might change)
+    const observer = new ResizeObserver(reportBounds);
+    observer.observe(menuRef.current);
+    return () => observer.disconnect();
+  }, [isOpen, onBoundsChange]);
+
   if (!isOpen) return null;
 
   return (
@@ -31,6 +70,7 @@ function MenuDropdown({ isOpen, onClose, children }) {
       onClick={onClose}
     >
       <div
+        ref={menuRef}
         className="absolute left-2 top-12 w-72 bg-white rounded-lg shadow-xl border border-gray-200 z-[99999]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -50,6 +90,7 @@ export function NavigationBar({
   const [showMenu, setShowMenu] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const inputRef = useRef(null);
+  const { setExclusion, clearExclusions } = useBrowserOverlayExclusion();
 
   const activeTabId = useTabStore((s) => s.activeTabId);
   const tabs = useTabStore((s) => s.tabs);
@@ -69,7 +110,10 @@ export function NavigationBar({
 
   useEffect(() => {
     const handleEsc = (e) => {
-      if (e.key === "Escape") setShowMenu(false);
+      if (e.key === "Escape") {
+        clearExclusions();
+        setShowMenu(false);
+      }
     };
     document.addEventListener("keydown", handleEsc);
     return () => document.removeEventListener("keydown", handleEsc);
@@ -92,6 +136,7 @@ export function NavigationBar({
     if (url) {
       onNavigate(activeTab?.id, url);
     }
+    clearExclusions();
     setShowMenu(false);
   };
 
@@ -148,7 +193,14 @@ export function NavigationBar({
 
         {/* Menu Button */}
         <button
-          onClick={() => setShowMenu(!showMenu)}
+          onClick={() => {
+            if (showMenu) {
+              clearExclusions();
+              setShowMenu(false);
+            } else {
+              setShowMenu(true);
+            }
+          }}
           className={clsx(
             "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
             showMenu ? "bg-gray-200 text-gray-800" : "text-gray-600 hover:bg-gray-100"
@@ -198,7 +250,20 @@ export function NavigationBar({
       </div>
 
       {/* Menu Dropdown - rendered at document level */}
-      <MenuDropdown isOpen={showMenu} onClose={() => setShowMenu(false)}>
+      <MenuDropdown
+        isOpen={showMenu}
+        onClose={() => {
+          clearExclusions();
+          setShowMenu(false);
+        }}
+        onBoundsChange={(rect) => {
+          if (rect) {
+            setExclusion(rect, UI_HEIGHT_PHYSICAL);
+          } else {
+            clearExclusions();
+          }
+        }}
+      >
         <div className="p-2">
           {/* Bookmark Toggle */}
           <button
