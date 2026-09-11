@@ -222,6 +222,10 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
     log::info!("[ZORDER] === ensure_react_ui_above_browser: BEFORE ===");
     enumerate_hwnd_tree(main_window, "before-fix");
 
+    // Write forensic log snapshot BEFORE fix.
+    forensic::dump_tree(main_hwnd.0 as isize, "BEFORE-zorder-fix");
+    forensic::dump_z_order(main_hwnd.0 as isize, "BEFORE-zorder-fix");
+
     // Walk all children to find WRY_WEBVIEW containers.
     // GW_CHILD = topmost; GW_HWNDPREV = previous (toward bottom).
     let mut child = match unsafe { GetWindow(main_hwnd, GW_CHILD) } {
@@ -265,7 +269,7 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
         "[ZORDER] Bringing oldest WRY_WEBVIEW (z={}, hwnd={:?}) to HWND_TOP",
         oldest_wry_z, oldest_wry_child.0
     );
-    unsafe {
+    let setwindowpos_ok = unsafe {
         let r = SetWindowPos(
             oldest_wry_child,
             Some(HWND_TOP),
@@ -273,10 +277,25 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
         log::info!("[ZORDER] SetWindowPos result: {:?}", r.is_ok());
-    }
+        r.is_ok()
+    };
+
+    // Forensic: log the SetWindowPos call.
+    forensic::log_setwindowpos(
+        main_hwnd.0 as isize,
+        oldest_wry_child.0 as isize,
+        Some(0), // HWND_TOP
+        (SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE).0,
+        setwindowpos_ok,
+        "zorder-fix",
+    );
 
     log::info!("[ZORDER] === ensure_react_ui_above_browser: AFTER ===");
     enumerate_hwnd_tree(main_window, "after-fix");
+
+    // Forensic: dump tree AFTER fix.
+    forensic::dump_tree(main_hwnd.0 as isize, "AFTER-zorder-fix");
+    forensic::dump_z_order(main_hwnd.0 as isize, "AFTER-zorder-fix");
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -294,7 +313,12 @@ use tauri::{
 
 mod startup_profiler;
 mod forensic;
-use forensic::{find_react_ui_wry, find_browser_wry_by_geometry, find_render_surface};
+use forensic::{
+    dump_tree, dump_webview_paint_hierarchy, dump_wry_pair, dump_z_order,
+    find_browser_wry_by_geometry, find_react_ui_wry, find_render_surface,
+    init_log, inspect_point, inspect_points,
+    kv, line, log_app_info, log_event, log_setwindowpos, section, stage,
+};
 use startup_profiler::StartupProfiler;
 
 /// A single overlay exclusion rectangle, in browser WRY local coordinates (physical pixels).
@@ -1800,6 +1824,8 @@ async fn navigate_browser(
     let browser_state = app.state::<BrowserWebview>();
 
     let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_hwnd = main_window.hwnd()
+        .map_err(|e| format!("Failed to get main HWND: {}", e))?;
     let main_size = main_window.inner_size()
         .map_err(|e| format!("Failed to get main window size: {}", e))?;
     let scale = main_window.scale_factor()
@@ -1841,6 +1867,14 @@ async fn navigate_browser(
                 0.0, UI_HEIGHT, main_logical_width, browser_height
             );
             *browser_wv = Some(browser_webview);
+
+            // ── FORENSIC: Browser WRY created — log lifecycle event ──────────────
+            forensic::stage("BROWSER_WRY_CREATED");
+            forensic::log_event(main_hwnd.0 as isize, "WEBVIEW_CREATED", &format!(
+                "url={} tab={} bounds=({:.0},{:.0}) size=({:.0}x{:.0})",
+                url, tabId, 0.0, UI_HEIGHT, main_logical_width, browser_height
+            ));
+
             true
         } else {
             // Update bounds in case the main window was resized since last creation.
@@ -1895,6 +1929,40 @@ async fn navigate_browser(
     if browser_created {
         enumerate_hwnd_tree(&main_window, "navigate-before-fix");
         ensure_react_ui_above_browser(&main_window);
+        // ── FORENSIC: Point inspection at browser viewport ───────────────────
+        // Inspect several points to determine pixel ownership.
+        if let Ok(main_hwnd_val) = main_window.hwnd() {
+            let main_h = windows::Win32::Foundation::HWND(main_hwnd_val.0);
+            forensic::stage("POST-CREATE-POINT-INSPECT");
+            forensic::dump_tree(main_h.0 as isize, "post-create");
+            forensic::dump_webview_paint_hierarchy(main_h.0 as isize, "post-create");
+
+            // Get main window rect in screen coordinates.
+            use windows::Win32::Foundation::RECT;
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+            let mut main_rect = RECT::default();
+            if unsafe { GetWindowRect(main_h, &mut main_rect) }.is_ok() {
+                let mw = (main_rect.right - main_rect.left) as i32;
+                let mh = (main_rect.bottom - main_rect.top) as i32;
+                forensic::kv("main_rect", &format!("({},{} {},{})", main_rect.left, main_rect.top, main_rect.right, main_rect.bottom));
+                forensic::kv("ui_height", &format!("{}", UI_HEIGHT));
+
+                // Compute browser viewport center.
+                let cx = main_rect.left + mw / 2;
+                let cy = main_rect.top + (UI_HEIGHT as i32) + ((mh as f64 - UI_HEIGHT) / 2.0) as i32;
+                forensic::kv("browser_center", &format!("({},{})", cx, cy));
+                forensic::inspect_point(cx, cy, "BROWSER-CENTER");
+
+                // Browser top-left.
+                forensic::inspect_point(main_rect.left + 10, main_rect.top + (UI_HEIGHT as i32) + 10, "BROWSER-TOPLEFT");
+
+                // Browser bottom-right.
+                forensic::inspect_point(main_rect.right - 10, main_rect.bottom - 10, "BROWSER-BOTTOMRIGHT");
+
+                // React UI center (control point — should return React WRY).
+                forensic::inspect_point(main_rect.left + mw / 2, main_rect.top + 30, "REACT-CENTER");
+            }
+        }
     }
 
     lifecycle.mark_active();
@@ -1903,8 +1971,19 @@ async fn navigate_browser(
     let target_url = url::Url::parse(&url)
         .map_err(|e| format!("Invalid URL: {}", e))?;
     if let Some(ref webview) = *browser_state.webview.lock().unwrap() {
+        forensic::log_event(main_hwnd.0 as isize, "NAVIGATE_REQUESTED", &format!(
+            "url={} tab={}", target_url, tabId
+        ));
+        let url_for_log = target_url.clone();
         webview.navigate(target_url)
-            .map_err(|e| format!("Navigation failed: {}", e))?;
+            .map_err(|e: tauri::Error| {
+                let msg = format!("{}", e);
+                forensic::log_event(main_hwnd.0 as isize, "NAVIGATE_ERROR", &msg);
+                format!("Navigation failed: {}", e)
+            })?;
+        forensic::log_event(main_hwnd.0 as isize, "NAVIGATE_SUBMITTED", &format!(
+            "url={} tab={}", url_for_log, tabId
+        ));
     }
 
     // Record navigation in session state (preserved from original).
@@ -3836,6 +3915,201 @@ fn run_zorder_tests(app: tauri::AppHandle) -> Result<String, String> {
     Ok(format!("Z-order tests complete for main hwnd=0x{:X}", raw))
 }
 
+// ── FORENSIC: Comprehensive browser geometry diagnostic ─────────────────────
+// Inspects both WRY windows and pixel ownership at key viewport points.
+// Writes to %TEMP%\eduos-browser-hwnd-diagnostic.log
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn diagnose_browser_geometry(app: tauri::AppHandle) -> Result<String, String> {
+    use windows::Win32::Foundation::{HWND as RawHWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+    forensic::stage("DIAGNOSE_BROWSER_GEOMETRY");
+
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_hwnd_val = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let main_h = RawHWND(main_hwnd_val.0);
+
+    // Full tree dump.
+    forensic::dump_tree(main_h.0 as isize, "diagnose");
+    forensic::dump_webview_paint_hierarchy(main_h.0 as isize, "diagnose");
+
+    // Get main window rect.
+    let mut main_rect = RECT::default();
+    let mr: RECT = if unsafe { GetWindowRect(main_h, &mut main_rect) }.is_ok() {
+        main_rect
+    } else {
+        forensic::log_event(main_h.0 as isize, "DIAGNOSE", "Failed to get main window rect");
+        return Err("Failed to get main window rect".into());
+    };
+
+    let mw = (mr.right - mr.left) as i32;
+    let mh = (mr.bottom - mr.top) as i32;
+    forensic::kv("main_rect", &format!("({},{} {},{})", mr.left, mr.top, mr.right, mr.bottom));
+    forensic::kv("main_size", &format!("{}x{}", mw, mh));
+    forensic::kv("ui_height", &format!("{}", UI_HEIGHT));
+
+    // Inspect React WRY.
+    if let Some(react_h) = find_react_ui_wry(main_h) {
+        let mut rr = RECT::default();
+        let rv = unsafe { IsWindowVisible(react_h) }.as_bool();
+        let _ = unsafe { GetWindowRect(react_h, &mut rr) };
+        forensic::log_event(react_h.0 as isize, "REACT_WRY", &format!(
+            "rect=({},{} {},{}) visible={}", rr.left, rr.top, rr.right, rr.bottom, rv
+        ));
+    } else {
+        forensic::line("  REACT_WRY: not found");
+    }
+
+    // Inspect Browser WRY.
+    if let Some(browser_h) = find_browser_wry_by_geometry(main_h) {
+        let mut br = RECT::default();
+        let bv = unsafe { IsWindowVisible(browser_h) }.as_bool();
+        let _ = unsafe { GetWindowRect(browser_h, &mut br) };
+        forensic::log_event(browser_h.0 as isize, "BROWSER_WRY", &format!(
+            "rect=({},{} {},{}) visible={}", br.left, br.top, br.right, br.bottom, bv
+        ));
+
+        // Browser render surface.
+        if let Some((rh, cls, depth)) = find_render_surface(browser_h) {
+            let mut rr = RECT::default();
+            let _ = unsafe { GetWindowRect(rh, &mut rr) };
+            forensic::log_event(rh.0 as isize, "BROWSER_RENDER_SURFACE", &format!(
+                "cls={} depth={} rect=({},{} {},{})", cls, depth, rr.left, rr.top, rr.right, rr.bottom
+            ));
+        }
+
+        // Point inspections at browser viewport.
+        forensic::section("BROWSER-VIEWPORT-POINTS");
+
+        // Browser center.
+        let bx1 = br.left + (br.right - br.left) / 2;
+        let by1 = br.top + (br.bottom - br.top) / 2;
+        forensic::kv("browser_center", &format!("({},{})", bx1, by1));
+        forensic::inspect_point(bx1, by1, "BROWSER-CENTER");
+
+        // Browser top-left.
+        forensic::inspect_point(br.left + 10, br.top + 10, "BROWSER-TOPLEFT");
+
+        // Browser bottom-right.
+        forensic::inspect_point(br.right - 10, br.bottom - 10, "BROWSER-BOTTOMRIGHT");
+
+        // React center (control — should be React WRY).
+        forensic::inspect_point(mr.left + mw / 2, mr.top + 30, "REACT-CENTER");
+
+        // Point at the boundary (y = UI_HEIGHT).
+        let boundary_y = mr.top + UI_HEIGHT as i32;
+        forensic::inspect_point(mr.left + mw / 2, boundary_y, "UI-BOUNDARY");
+
+    } else {
+        forensic::line("  BROWSER_WRY: not found");
+    }
+
+    Ok(format!(
+        "Diagnostic written to forensic log: main=0x{:X} main_rect=({},{} {},{})",
+        main_h.0 as isize, mr.left, mr.top, mr.right, mr.bottom
+    ))
+}
+
+// ── FORENSIC: Controlled browser geometry experiment ──────────────────────────
+// Temporarily moves the browser WRY to a non-overlapping position.
+// The browser WRY is repositioned using MoveWindow (not add_child/set_bounds).
+// After inspection, the browser WRY is RESTORED to its original position.
+// This tests whether non-overlapping geometry allows browser rendering.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn experiment_browser_nonoverlap(app: tauri::AppHandle) -> Result<String, String> {
+    use windows::Win32::Foundation::{HWND as RawHWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, MoveWindow, GetWindow};
+
+    forensic::stage("EXPERIMENT_NONOVERLAP");
+
+    let main_window = app.get_window("main").ok_or("Main window not found")?;
+    let main_hwnd_val = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let main_h = RawHWND(main_hwnd_val.0);
+
+    // Get main window rect.
+    let mut mr = RECT::default();
+    if unsafe { GetWindowRect(main_h, &mut mr) }.is_err() {
+        return Err("Failed to get main window rect".into());
+    }
+    let mw = (mr.right - mr.left) as i32;
+    let mh = (mr.bottom - mr.top) as i32;
+
+    forensic::kv("main_rect", &format!("({},{} {},{})", mr.left, mr.top, mr.right, mr.bottom));
+    forensic::kv("experiment", "NONOVERLAP");
+    forensic::kv("ui_height", &format!("{}", UI_HEIGHT));
+
+    // Find browser WRY.
+    let Some(browser_h) = find_browser_wry_by_geometry(main_h) else {
+        return Err("Browser WRY not found".into());
+    };
+
+    // Get original browser WRY rect.
+    let mut orig_rect = RECT::default();
+    if unsafe { GetWindowRect(browser_h, &mut orig_rect) }.is_err() {
+        return Err("Failed to get browser WRY rect".into());
+    }
+
+    let orig_left = orig_rect.left;
+    let orig_top = orig_rect.top;
+    let orig_w = orig_rect.right - orig_rect.left;
+    let orig_h = orig_rect.bottom - orig_rect.top;
+
+    forensic::log_event(browser_h.0 as isize, "EXPERIMENT_ORIG", &format!(
+        "rect=({},{} {},{}) size={}x{}", orig_left, orig_top, orig_rect.right, orig_rect.bottom, orig_w, orig_h
+    ));
+
+    // ── Experiment: Move browser WRY to a smaller, clearly non-overlapping position ─
+    // Position: shifted 50px down and 50px right from original.
+    // Size: reduced to 50% to make it visually obvious.
+    let exp_w = orig_w / 2;
+    let exp_h = orig_h / 2;
+    let exp_x = orig_left + 50;
+    let exp_y = orig_top + 50;
+
+    forensic::line(&format!("  Moving browser WRY to non-overlapping position: ({},{}) {}x{}", exp_x, exp_y, exp_w, exp_h));
+
+    let moved = unsafe {
+        MoveWindow(browser_h, exp_x, exp_y, exp_w, exp_h, true)
+    };
+
+    forensic::kv("move_result", if moved.is_ok() { "OK" } else { "FAILED" });
+
+    if moved.is_err() {
+        return Err("MoveWindow failed".into());
+    }
+
+    // Give the window time to paint.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Capture post-move state.
+    forensic::dump_tree(main_h.0 as isize, "post-move");
+    forensic::inspect_point(exp_x + exp_w / 2, exp_y + exp_h / 2, "POST-MOVE-BROWSER-CENTER");
+    forensic::inspect_point(orig_left + orig_w / 2, orig_top + orig_h / 2, "POST-MOVE-ORIG-CENTER");
+
+    forensic::line("  === Experiment observation window ===");
+    forensic::line("  Please visually inspect the application now.");
+    forensic::line(&format!("  Browser WRY should appear at: ({},{}) {}x{}", exp_x, exp_y, exp_w, exp_h));
+    forensic::line("  React UI should remain at original position.");
+    forensic::line("  === End observation window ===");
+
+    // Restore original position.
+    forensic::line(&format!("  Restoring browser WRY to original: ({},{}) {}x{}", orig_left, orig_top, orig_w, orig_h));
+    let restored = unsafe {
+        MoveWindow(browser_h, orig_left, orig_top, orig_w, orig_h, true)
+    };
+    forensic::kv("restore_result", if restored.is_ok() { "OK" } else { "FAILED" });
+
+    forensic::stage("EXPERIMENT_COMPLETE");
+
+    Ok(format!(
+        "Experiment complete. Browser WRY moved to ({},{}) {}x{} then restored.",
+        exp_x, exp_y, exp_w, exp_h
+    ))
+}
+
 fn main() {
 
     setup_panic_handler();
@@ -3877,6 +4151,11 @@ fn main() {
 
     
     let builder_start_instant = std::time::Instant::now();
+
+    // Initialize forensic diagnostic log: writes to %TEMP%\eduos-browser-hwnd-diagnostic.log
+    forensic::init_log();
+    forensic::log_app_info();
+    forensic::section("APP_STARTUP");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -3969,6 +4248,10 @@ fn main() {
             dump_paint_hierarchy,
             #[cfg(target_os = "windows")]
             run_zorder_tests,
+            #[cfg(target_os = "windows")]
+            diagnose_browser_geometry,
+            #[cfg(target_os = "windows")]
+            experiment_browser_nonoverlap,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

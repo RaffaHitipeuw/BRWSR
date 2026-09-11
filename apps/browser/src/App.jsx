@@ -153,6 +153,34 @@ function App() {
           console.error("[DIAG] Restore failed:", err);
         }
       }
+      // Ctrl+Shift+G = forensic browser geometry diagnostic
+      if (e.ctrlKey && e.shiftKey && e.key === "G") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[FORENSIC] Running browser geometry diagnostic...");
+          const msg = await browserCommands.diagnoseBrowserGeometry();
+          console.info("[FORENSIC] Result:", msg);
+          alert("Geometry diagnostic complete.\nForensic log: %TEMP%\\eduos-browser-hwnd-diagnostic.log\n" + msg);
+        } catch (err) {
+          console.error("[FORENSIC] Geometry diagnostic failed:", err);
+          alert("Geometry diagnostic failed: " + err);
+        }
+      }
+      // Ctrl+Shift+N = non-overlap experiment (browser WRY repositioned then restored)
+      if (e.ctrlKey && e.shiftKey && e.key === "N") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[FORENSIC] Running non-overlap experiment...");
+          const msg = await browserCommands.experimentBrowserNonoverlap();
+          console.info("[FORENSIC] Result:", msg);
+          alert("Non-overlap experiment complete.\nForensic log: %TEMP%\\eduos-browser-hwnd-diagnostic.log\n" + msg);
+        } catch (err) {
+          console.error("[FORENSIC] Non-overlap experiment failed:", err);
+          alert("Non-overlap experiment failed: " + err);
+        }
+      }
     };
     window.addEventListener("keydown", handleDiag);
     return () => window.removeEventListener("keydown", handleDiag);

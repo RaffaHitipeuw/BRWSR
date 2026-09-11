@@ -331,6 +331,20 @@ export const browser = {
   async restoreBrowserFullRegion(): Promise<string> {
     return (await invoke("restore_browser_full_region")) as string;
   },
+
+  /** Forensic: comprehensive browser geometry diagnostic.
+   * Inspects both WRY windows, captures pixel ownership at key points.
+   * Writes to %TEMP%\eduos-browser-hwnd-diagnostic.log */
+  async diagnoseBrowserGeometry(): Promise<string> {
+    return (await invoke("diagnose_browser_geometry")) as string;
+  },
+
+  /** Forensic: controlled non-overlap experiment.
+   * Moves browser WRY to non-overlapping position, waits, restores.
+   * Use after app starts and browser WRY is created. */
+  async experimentBrowserNonoverlap(): Promise<string> {
+    return (await invoke("experiment_browser_nonoverlap")) as string;
+  },
 };
 
 export const browserCommands = browser;
