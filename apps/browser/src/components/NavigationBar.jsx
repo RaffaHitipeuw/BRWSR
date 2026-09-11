@@ -2,12 +2,28 @@ import { clsx } from "clsx";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTabStore } from "../stores/tabs";
 import { useBookmarksStore } from "../stores/bookmarks";
-import { useBrowserOverlayExclusion } from "../hooks/useBrowserOverlay";
 
-// UI_HEIGHT in physical pixels.
-// This must match the Rust UI_HEIGHT (88 logical) scaled by the window's DPI factor.
-// At scale 1.5: 88 * 1.5 = 132. At scale 1.0: 88. At scale 2.0: 176.
-const UI_HEIGHT_PHYSICAL = 132; // Will be refined from window
+// ─── Coordinate System ───────────────────────────────────────────────────────
+//
+// React (getBoundingClientRect) → viewport-relative LOGICAL coords
+//   origin (0,0) = top-left of browser viewport (inside the browser WRY)
+//
+// Viewport logical → PHYSICAL (for Win32 SetWindowPos):
+//   physical = logical * scale_factor
+//   scale_factor = physical / logical (typically 1.25 on 125% DPI)
+//
+// Tauri overlay window: positioned at absolute screen PHYSICAL coordinates
+//   screen_x = main_window.left_physical + rect.left * scale
+//   screen_y = main_window.top_physical  + UI_HEIGHT_physical + rect.top * scale
+//
+// UI_HEIGHT = 88 logical = 88 * scale physical pixels
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scale factor — determined empirically for this window config
+// Can be made dynamic by querying Tauri window.scaleFactor() if needed
+const SCALE = 1.25;
+const UI_HEIGHT_LOGICAL = 88;
+const UI_HEIGHT_PHYSICAL = Math.round(UI_HEIGHT_LOGICAL * SCALE);
 
 function NavButton({ onClick, disabled, title, children }) {
   return (
@@ -27,57 +43,44 @@ function NavButton({ onClick, disabled, title, children }) {
   );
 }
 
-// Menu dropdown component - rendered at document level
-// When open, reports its bounding rect to Rust to create a "hole" in the browser WRY.
-function MenuDropdown({ isOpen, onClose, children, onBoundsChange }) {
-  const menuRef = useRef(null);
+// ─── Native Overlay Integration ─────────────────────────────────────────────
+// The bookmark menu is shown via a dedicated native overlay window,
+// completely bypassing the sibling WebView2 z-order/airspace problem.
+// A transparent click-capture div in the main React app handles
+// "click outside to close" since the overlay is a separate native window.
 
-  // Report bounds whenever menu opens or its content changes
-  useEffect(() => {
-    if (!isOpen || !menuRef.current) {
-      onBoundsChange?.(null);
-      return;
-    }
+/** Show the native overlay window with given viewport-relative rect (logical coords). */
+async function showNativeOverlay(rect) {
+  const viewportXPhys = Math.round(rect.left * SCALE);
+  const viewportYPhys = Math.round(rect.top * SCALE);
+  const widthPhys = Math.round(rect.width * SCALE);
+  const heightPhys = Math.round(rect.height * SCALE);
 
-    const reportBounds = () => {
-      if (!menuRef.current) return;
-      const rect = menuRef.current.getBoundingClientRect();
-      // Convert viewport rect to browser WRY local coords:
-      // browser WRY starts at viewport y = UI_HEIGHT_PHYSICAL
-      // so browserLocalY = rect.top - UI_HEIGHT_PHYSICAL
-      onBoundsChange?.({
-        left: rect.left,
-        top: rect.top - UI_HEIGHT_PHYSICAL,
-        width: rect.width,
-        height: rect.height,
-      });
-    };
-
-    // Report immediately
-    reportBounds();
-
-    // Also report on resize (content might change)
-    const observer = new ResizeObserver(reportBounds);
-    observer.observe(menuRef.current);
-    return () => observer.disconnect();
-  }, [isOpen, onBoundsChange]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-[99998]"
-      onClick={onClose}
-    >
-      <div
-        ref={menuRef}
-        className="absolute left-2 top-12 w-72 bg-white rounded-lg shadow-xl border border-gray-200 z-[99999]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {children}
-      </div>
-    </div>
+  const { browserCommands } = await import("./browserCommands");
+  await browserCommands.showNativeOverlay(
+    "bookmark_menu",
+    viewportXPhys,
+    viewportYPhys,
+    widthPhys,
+    heightPhys,
   );
+
+  // Pass current bookmark state to the overlay window via localStorage
+  const state = useBookmarksStore.getState();
+  const tabStore = useTabStore.getState();
+  const activeTab = tabStore.tabs.find((t) => t.id === tabStore.activeTabId);
+  const url = activeTab?.url || "";
+  const isBookmarked = state.isBookmarked(url);
+  localStorage.setItem(
+    "eduos-overlay-bookmark-state",
+    JSON.stringify({ url, isBookmarked }),
+  );
+}
+
+/** Hide the native overlay window. */
+async function hideNativeOverlay() {
+  const { browserCommands } = await import("./browserCommands");
+  await browserCommands.hideNativeOverlay();
 }
 
 export function NavigationBar({
@@ -85,12 +88,10 @@ export function NavigationBar({
   onForward,
   onReload,
   onNavigate,
-  onNewTab,
 }) {
   const [showMenu, setShowMenu] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const inputRef = useRef(null);
-  const { setExclusion, clearExclusions } = useBrowserOverlayExclusion();
 
   const activeTabId = useTabStore((s) => s.activeTabId);
   const tabs = useTabStore((s) => s.tabs);
@@ -108,16 +109,17 @@ export function NavigationBar({
   const removeBookmark = useBookmarksStore((s) => s.removeBookmark);
   const bookmarks = useBookmarksStore((s) => s.items);
 
+  // Escape key → close overlay
   useEffect(() => {
     const handleEsc = (e) => {
-      if (e.key === "Escape") {
-        clearExclusions();
+      if (e.key === "Escape" && showMenu) {
         setShowMenu(false);
+        hideNativeOverlay();
       }
     };
     document.addEventListener("keydown", handleEsc);
     return () => document.removeEventListener("keydown", handleEsc);
-  }, []);
+  }, [showMenu]);
 
   const handleBookmarkToggle = useCallback(() => {
     if (!activeTab?.url) return;
@@ -132,12 +134,12 @@ export function NavigationBar({
   const currentUrl = activeTab?.url || "";
   const urlIsBookmarked = activeTab?.url ? isBookmarked(activeTab.url) : false;
 
-  const handleMenuClick = (url) => {
+  const handleMenuNavigate = (url) => {
     if (url) {
       onNavigate(activeTab?.id, url);
     }
-    clearExclusions();
     setShowMenu(false);
+    hideNativeOverlay();
   };
 
   const handleUrlSubmit = (e) => {
@@ -145,14 +147,11 @@ export function NavigationBar({
     if (urlInput.trim() && activeTabId) {
       let url = urlInput.trim();
 
-      // Check if it's a URL or search query
       if (url.includes(".") && !url.includes(" ")) {
-        // Has a dot and no spaces - likely a URL
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
           url = "https://" + url;
         }
       } else {
-        // No dot or has spaces - treat as search query
         const encodedQuery = encodeURIComponent(url);
         url = `https://www.google.com/search?q=${encodedQuery}`;
       }
@@ -167,8 +166,40 @@ export function NavigationBar({
     }
   };
 
+  // Menu button click → show native overlay
+  const handleMenuToggle = useCallback(() => {
+    if (showMenu) {
+      setShowMenu(false);
+      hideNativeOverlay();
+    } else {
+      // Position the native overlay at the dropdown location in the viewport.
+      // The dropdown card was: left-2, top-12 (navbar-relative), w-72 (288px), ~350px tall.
+      // Navbar height = 48 logical px. Dropdown top in viewport coords = 48 + 12 = 60.
+      setShowMenu(true);
+      showNativeOverlay({
+        left: 8,
+        top: 60,
+        width: 288,
+        height: 350,
+      });
+    }
+  }, [showMenu]);
+
   return (
     <>
+      {/* Transparent click-capture overlay — closes native overlay when clicking outside the dropdown.
+          Only rendered when the menu is open. pointerEvents:auto lets it receive clicks. */}
+      {showMenu && (
+        <div
+          className="fixed inset-0"
+          style={{ background: "transparent", zIndex: 99998, pointerEvents: "auto" }}
+          onClick={() => {
+            setShowMenu(false);
+            hideNativeOverlay();
+          }}
+        />
+      )}
+
       <div
         className="flex items-center h-12 px-2 bg-gray-50 border-b border-gray-200 gap-1"
         style={{ zIndex: 9999, position: "relative" }}
@@ -193,14 +224,7 @@ export function NavigationBar({
 
         {/* Menu Button */}
         <button
-          onClick={() => {
-            if (showMenu) {
-              clearExclusions();
-              setShowMenu(false);
-            } else {
-              setShowMenu(true);
-            }
-          }}
+          onClick={handleMenuToggle}
           className={clsx(
             "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
             showMenu ? "bg-gray-200 text-gray-800" : "text-gray-600 hover:bg-gray-100"
@@ -248,85 +272,6 @@ export function NavigationBar({
           </form>
         </div>
       </div>
-
-      {/* Menu Dropdown - rendered at document level */}
-      <MenuDropdown
-        isOpen={showMenu}
-        onClose={() => {
-          clearExclusions();
-          setShowMenu(false);
-        }}
-        onBoundsChange={(rect) => {
-          if (rect) {
-            setExclusion(rect, UI_HEIGHT_PHYSICAL);
-          } else {
-            clearExclusions();
-          }
-        }}
-      >
-        <div className="p-2">
-          {/* Bookmark Toggle */}
-          <button
-            onClick={() => {
-              handleBookmarkToggle();
-              setShowMenu(false);
-            }}
-            className={clsx(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors",
-              urlIsBookmarked ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-blue-50 text-blue-600 hover:bg-blue-100"
-            )}
-          >
-            <svg
-              className="w-5 h-5"
-              fill={urlIsBookmarked ? "currentColor" : "none"}
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
-            <span className="font-medium">
-              {urlIsBookmarked ? "Remove Bookmark" : "Add Bookmark"}
-            </span>
-          </button>
-        </div>
-
-        <div className="border-t border-gray-100" />
-
-        {/* Quick Links */}
-        <div className="p-2">
-          <p className="px-2 py-1 text-xs text-gray-400 font-medium">Quick Links</p>
-          <button
-            onClick={() => handleMenuClick("https://www.google.com")}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-            </svg>
-            <span className="text-gray-700">Google</span>
-          </button>
-          <button
-            onClick={() => handleMenuClick("https://youtube.com")}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <svg className="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
-            </svg>
-            <span className="text-gray-700">YouTube</span>
-          </button>
-          <button
-            onClick={() => handleMenuClick("https://github.com")}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/>
-            </svg>
-            <span className="text-gray-700">GitHub</span>
-          </button>
-        </div>
-      </MenuDropdown>
     </>
   );
 }

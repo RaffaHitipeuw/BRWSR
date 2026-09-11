@@ -52,6 +52,39 @@ function App() {
     }
   }, [activeTabId, activeTab]);
 
+  // Listen for events from the native overlay window (bookmark/navigate actions)
+  useEffect(() => {
+    let unlistenNavigate = null;
+    let unlistenBookmarkToggle = null;
+
+    async function setupListeners() {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlistenNavigate = await listen("overlay-navigate", (event) => {
+          const url = event.payload;
+          console.info("[App] overlay-navigate:", url);
+          if (activeTabId) {
+            browser.navigate(url, activeTabId, "overlay");
+          }
+        });
+        unlistenBookmarkToggle = await listen("overlay-bookmark-toggle", () => {
+          console.info("[App] overlay-bookmark-toggle received");
+          // Trigger a re-render by toggling the active tab state
+          // The NavigationBar reads bookmark state directly from the store
+          // so we just need to notify it changed
+        });
+      } catch (err) {
+        console.warn("[App] Failed to setup overlay listeners:", err);
+      }
+    }
+
+    setupListeners();
+    return () => {
+      unlistenNavigate?.();
+      unlistenBookmarkToggle?.();
+    };
+  }, [activeTabId]);
+
   const handleTabClick = useCallback(
     (tabId) => {
       setActiveTab(tabId);

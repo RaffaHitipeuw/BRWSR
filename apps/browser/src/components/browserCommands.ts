@@ -347,18 +347,30 @@ export const browser = {
   },
 
   /** Overlay: Show the native transparent overlay window above the browser. */
-  async showOverlayWindow(): Promise<string> {
-    return (await invoke("show_overlay_window")) as string;
+  async showNativeOverlay(
+    overlayType: string,
+    viewportX: number,
+    viewportY: number,
+    width: number,
+    height: number,
+  ): Promise<string> {
+    return (await invoke("show_native_overlay", {
+      overlayType,
+      viewportX,
+      viewportY,
+      width,
+      height,
+    })) as string;
   },
 
   /** Overlay: Hide the native transparent overlay window. */
-  async hideOverlayWindow(): Promise<string> {
-    return (await invoke("hide_overlay_window")) as string;
+  async hideNativeOverlay(): Promise<string> {
+    return (await invoke("hide_native_overlay")) as string;
   },
 
   /** Overlay: Check if the overlay window is currently visible. */
-  async isOverlayVisible(): Promise<boolean> {
-    return (await invoke("is_overlay_visible")) as boolean;
+  async isNativeOverlayVisible(): Promise<boolean> {
+    return (await invoke("is_native_overlay_visible")) as boolean;
   },
 };
 
