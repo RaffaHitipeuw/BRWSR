@@ -25,7 +25,7 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "src/main.jsx"),
+        main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "src/overlay.html"),
       },
     },

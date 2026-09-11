@@ -4143,7 +4143,7 @@ fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
     let overlay = WebviewWindowBuilder::new(
         app,
         "overlay",
-        WebviewUrl::App("overlay.html".into()),
+        WebviewUrl::App("src/overlay.html".into()),
     )
     .title("Overlay")
     .inner_size(320.0, 280.0)
