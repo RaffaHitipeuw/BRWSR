@@ -345,6 +345,21 @@ export const browser = {
   async experimentBrowserNonoverlap(): Promise<string> {
     return (await invoke("experiment_browser_nonoverlap")) as string;
   },
+
+  /** Overlay: Show the native transparent overlay window above the browser. */
+  async showOverlayWindow(): Promise<string> {
+    return (await invoke("show_overlay_window")) as string;
+  },
+
+  /** Overlay: Hide the native transparent overlay window. */
+  async hideOverlayWindow(): Promise<string> {
+    return (await invoke("hide_overlay_window")) as string;
+  },
+
+  /** Overlay: Check if the overlay window is currently visible. */
+  async isOverlayVisible(): Promise<boolean> {
+    return (await invoke("is_overlay_visible")) as boolean;
+  },
 };
 
 export const browserCommands = browser;

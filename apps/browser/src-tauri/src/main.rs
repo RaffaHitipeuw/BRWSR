@@ -4110,6 +4110,168 @@ fn experiment_browser_nonoverlap(app: tauri::AppHandle) -> Result<String, String
     ))
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Native Overlay Window - Separate transparent overlay for UI elements
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// State to hold the overlay window reference
+struct OverlayWindowState {
+    window: Mutex<Option<tauri::WebviewWindow>>,
+    offset_x: Mutex<i32>,
+    offset_y: Mutex<i32>,
+}
+
+impl Default for OverlayWindowState {
+    fn default() -> Self {
+        Self {
+            window: Mutex::new(None),
+            offset_x: Mutex::new(50),
+            offset_y: Mutex::new(50),
+        }
+    }
+}
+
+/// Creates the overlay window (hidden by default).
+/// Called once during setup.
+#[cfg(target_os = "windows")]
+fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    log::info!("[OVERLAY] Creating native overlay window...");
+
+    let overlay = WebviewWindowBuilder::new(
+        app,
+        "overlay",
+        WebviewUrl::App("overlay.html".into()),
+    )
+    .title("Overlay")
+    .inner_size(320.0, 280.0)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .visible(false)
+    .skip_taskbar(true)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("Failed to create overlay window: {}", e))?;
+
+    log::info!("[OVERLAY] Overlay window created successfully");
+    Ok(overlay)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn create_overlay_window(_app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    Err("Overlay window only supported on Windows".into())
+}
+
+/// Command: Show the overlay window at a position relative to the main window.
+#[tauri::command]
+fn show_overlay_window(app: tauri::AppHandle) -> Result<String, String> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, SetWindowPos};
+    use windows::Win32::Foundation::HWND as RawHWND;
+    use tauri::LogicalPosition;
+
+    let state = app.state::<OverlayWindowState>();
+    let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+
+    // Get or create overlay window
+    let overlay_window = {
+        let mut opt = state.window.lock().unwrap();
+        if let Some(ref w) = *opt {
+            w.clone()
+        } else {
+            let w = create_overlay_window(&app)?;
+            *opt = Some(w.clone());
+            w
+        }
+    };
+
+    // Get main window screen position
+    let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    let main_hwnd = RawHWND(main_hwnd_raw.0);
+
+    let mut main_rect = RECT::default();
+    unsafe {
+        if GetWindowRect(main_hwnd, &mut main_rect).is_err() {
+            return Err("Failed to get main window rect".into());
+        }
+    }
+
+    // Get offset for overlay position
+    let (offset_x, offset_y) = {
+        let ox = *state.offset_x.lock().unwrap();
+        let oy = *state.offset_y.lock().unwrap();
+        (ox, oy)
+    };
+
+    // Position overlay near center of browser viewport (below UI_HEIGHT)
+    // Calculate browser center area position
+    let browser_center_x = main_rect.left + (main_rect.right - main_rect.left) / 2 - 160; // 160 = half overlay width
+    let browser_center_y = main_rect.top + 200; // Start below the React UI
+
+    // Get overlay HWND
+    let overlay_hwnd_raw = overlay_window.hwnd().map_err(|e| format!("overlay hwnd error: {}", e))?;
+    let overlay_hwnd = RawHWND(overlay_hwnd_raw.0);
+
+    // Use SetWindowPos to position the overlay window at topmost z-order
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+            overlay_hwnd,
+            Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST),
+            browser_center_x,
+            browser_center_y,
+            0,
+            0,
+            windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
+                | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE,
+        ).map_err(|e| format!("SetWindowPos failed: {}", e))?;
+    }
+
+    // Show the overlay
+    overlay_window.show().map_err(|e| format!("Failed to show overlay: {}", e))?;
+
+    // Bring overlay to top
+    overlay_window.set_always_on_top(true).map_err(|e| format!("Failed to set always on top: {}", e))?;
+
+    log::info!("[OVERLAY] Shown at screen position ({}, {})", browser_center_x, browser_center_y);
+
+    Ok(format!(
+        "Overlay shown at ({}, {})",
+        browser_center_x, browser_center_y
+    ))
+}
+
+/// Command: Hide the overlay window.
+#[tauri::command]
+fn hide_overlay_window(app: tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<OverlayWindowState>();
+    let mut opt = state.window.lock().unwrap();
+
+    if let Some(ref window) = *opt {
+        window.hide().map_err(|e| format!("Failed to hide overlay: {}", e))?;
+        log::info!("[OVERLAY] Hidden");
+        Ok("Overlay hidden".into())
+    } else {
+        Ok("Overlay window not created yet".into())
+    }
+}
+
+/// Command: Check if overlay is visible.
+#[tauri::command]
+fn is_overlay_visible(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app.state::<OverlayWindowState>();
+    let opt = state.window.lock().unwrap();
+
+    if let Some(ref window) = *opt {
+        window.is_visible().map_err(|e| format!("Error checking visibility: {}", e))
+    } else {
+        Ok(false)
+    }
+}
+
 fn main() {
 
     setup_panic_handler();
@@ -4174,6 +4336,7 @@ fn main() {
         .manage(CachedSystem::new())
         .manage(Mutex::new(StartupProfiler::new()))
         .manage(BrowserOverlayState::default())
+        .manage(OverlayWindowState::default())
         .invoke_handler(tauri::generate_handler![
             
             minimize_window,
@@ -4252,6 +4415,14 @@ fn main() {
             diagnose_browser_geometry,
             #[cfg(target_os = "windows")]
             experiment_browser_nonoverlap,
+
+            // Native overlay window commands
+            #[cfg(target_os = "windows")]
+            show_overlay_window,
+            #[cfg(target_os = "windows")]
+            hide_overlay_window,
+            #[cfg(target_os = "windows")]
+            is_overlay_visible,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

@@ -181,6 +181,32 @@ function App() {
           alert("Non-overlap experiment failed: " + err);
         }
       }
+      // Ctrl+Shift+O = show native overlay window
+      if (e.ctrlKey && e.shiftKey && e.key === "O") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[OVERLAY] Showing native overlay...");
+          const msg = await browserCommands.showOverlayWindow();
+          console.info("[OVERLAY] Result:", msg);
+          alert("Overlay shown.\n" + msg);
+        } catch (err) {
+          console.error("[OVERLAY] Show failed:", err);
+          alert("Show overlay failed: " + err);
+        }
+      }
+      // Ctrl+Shift+P = hide native overlay window
+      if (e.ctrlKey && e.shiftKey && e.key === "P") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[OVERLAY] Hiding native overlay...");
+          const msg = await browserCommands.hideOverlayWindow();
+          console.info("[OVERLAY] Result:", msg);
+        } catch (err) {
+          console.error("[OVERLAY] Hide failed:", err);
+        }
+      }
     };
     window.addEventListener("keydown", handleDiag);
     return () => window.removeEventListener("keydown", handleDiag);
