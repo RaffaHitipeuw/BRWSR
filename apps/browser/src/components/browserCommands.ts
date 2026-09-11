@@ -354,23 +354,47 @@ export const browser = {
     width: number,
     height: number,
   ): Promise<string> {
-    return (await invoke("show_native_overlay", {
-      overlayType,
-      viewportX,
-      viewportY,
-      width,
-      height,
-    })) as string;
+    // ── PHASE 2: IPC WRAPPER TRACE ───────────────────────────────────────────
+    const args = { overlayType, viewportX, viewportY, width, height };
+    console.info(`[OVERLAY:IPC] INVOKE show_native_overlay with args:`, JSON.stringify(args));
+    try {
+      const result = (await invoke("show_native_overlay", args)) as string;
+      console.info(`[OVERLAY:IPC] RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      const errObj = err as { message?: string; name?: string; toString?: () => string } | null;
+      console.error(`[OVERLAY:IPC] REJECTED:`, errObj?.message || String(err));
+      console.error(`[OVERLAY:IPC] Error name:`, errObj?.name);
+      console.error(`[OVERLAY:IPC] Full error:`, err);
+      throw err;
+    }
   },
 
   /** Overlay: Hide the native transparent overlay window. */
   async hideNativeOverlay(): Promise<string> {
-    return (await invoke("hide_native_overlay")) as string;
+    console.info(`[OVERLAY:IPC] INVOKE hide_native_overlay`);
+    try {
+      const result = (await invoke("hide_native_overlay")) as string;
+      console.info(`[OVERLAY:IPC] hide_native_overlay RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      const errObj = err as { message?: string; name?: string; toString?: () => string } | null;
+      console.error(`[OVERLAY:IPC] hide_native_overlay REJECTED:`, errObj?.message || String(err));
+      throw err;
+    }
   },
 
   /** Overlay: Check if the overlay window is currently visible. */
   async isNativeOverlayVisible(): Promise<boolean> {
-    return (await invoke("is_native_overlay_visible")) as boolean;
+    console.info(`[OVERLAY:IPC] INVOKE is_native_overlay_visible`);
+    try {
+      const result = (await invoke("is_native_overlay_visible")) as boolean;
+      console.info(`[OVERLAY:IPC] is_native_overlay_visible RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[OVERLAY:IPC] is_native_overlay_visible REJECTED:`, err);
+      throw err;
+    }
   },
 };
 

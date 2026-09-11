@@ -4113,8 +4113,8 @@ fn experiment_browser_nonoverlap(app: tauri::AppHandle) -> Result<String, String
 /// Native overlay window geometry: viewport-relative rect in PHYSICAL pixels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeOverlayRect {
-    pub viewport_x: i32,    // viewport-relative x (logical rect.left * scale)
-    pub viewport_y: i32,    // viewport-relative y in browser WRY local coords (physical)
+    pub viewport_x: i32,
+    pub viewport_y: i32,
     pub width: i32,
     pub height: i32,
 }
@@ -4122,7 +4122,6 @@ pub struct NativeOverlayRect {
 /// Native overlay window state — holds the overlay WebviewWindow reference.
 struct OverlayWindowState {
     window: Mutex<Option<tauri::WebviewWindow>>,
-    /// Physical pixel offset from main window top-left to browser WRY top-left.
     browser_offset_y: Mutex<i32>,
 }
 
@@ -4135,31 +4134,103 @@ impl Default for OverlayWindowState {
     }
 }
 
-/// Creates the overlay WebviewWindow (hidden by default, lazy).
-/// The window is frameless, transparent, always-on-top, skip-taskbar.
-/// Its size is set dynamically when shown.
+/// ─────────────────────────────────────────────────────────────────────────────
+/// PHASE 4: Window creation validation with full property verification
+/// ─────────────────────────────────────────────────────────────────────────────
 #[cfg(target_os = "windows")]
 fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     use tauri::WebviewWindowBuilder;
     use tauri::WebviewUrl;
 
-    log::info!("[OVERLAY_WINDOW] Creating native overlay window...");
+    log::info!("[OVERLAY:5] OVERLAY_CREATE_BEGIN");
+    log::info!("[OVERLAY:5] WebviewWindowBuilder::new() starting...");
+    log::info!("[OVERLAY:5]   label: \"overlay\"");
+    log::info!("[OVERLAY:5]   url: src/overlay.html");
+    log::info!("[OVERLAY:5]   inner_size: 288x320 (initial, will be resized)");
+    log::info!("[OVERLAY:5]   decorations: false");
+    log::info!("[OVERLAY:5]   transparent: true");
+    log::info!("[OVERLAY:5]   always_on_top: true");
+    log::info!("[OVERLAY:5]   visible: false (initially hidden)");
+    log::info!("[OVERLAY:5]   skip_taskbar: true");
+    log::info!("[OVERLAY:5]   focused: false");
 
-    let overlay = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("src/overlay.html".into()))
-        .title("Overlay")
-        .inner_size(288.0, 320.0)   // will be resized via SetWindowPos
-        .min_inner_size(200.0, 100.0)
+    let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("src/overlay.html".into()))
+        .title("EduOS Overlay")
+        .inner_size(288.0, 320.0)
+        .min_inner_size(100.0, 100.0)
         .resizable(false)
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
         .visible(false)
         .skip_taskbar(true)
-        .focused(false)
-        .build()
-        .map_err(|e| format!("[OVERLAY_WINDOW] Failed to create: {}", e))?;
+        .focused(false);
 
-    log::info!("[OVERLAY_WINDOW] Created successfully");
+    log::info!("[OVERLAY:5] Builder created, calling build()...");
+
+    let overlay = builder.build()
+        .map_err(|e| {
+            log::error!("[OVERLAY:5] BUILD FAILED: {}", e);
+            format!("[OVERLAY:5] Failed to create overlay window: {}", e)
+        })?;
+
+    // ── PHASE 4: Verify window properties ──────────────────────────────────────
+    log::info!("[OVERLAY:5] BUILD SUCCESS, verifying window properties...");
+
+    // Label
+    let label = overlay.label();
+    log::info!("[OVERLAY:5]   label: \"{}\" (expected: \"overlay\")", label);
+
+    // Visibility
+    let is_visible = overlay.is_visible().unwrap_or(false);
+    log::info!("[OVERLAY:5]   is_visible: {} (expected: false initially)", is_visible);
+
+    // Minimized/maximized
+    let is_minimized = overlay.is_minimized().unwrap_or(false);
+    let is_maximized = overlay.is_maximized().unwrap_or(false);
+    log::info!("[OVERLAY:5]   is_minimized: {}", is_minimized);
+    log::info!("[OVERLAY:5]   is_maximized: {}", is_maximized);
+
+    // Inner size
+    if let Ok(inner) = overlay.inner_size() {
+        log::info!("[OVERLAY:5]   inner_size: {:.0}x{:.0}", inner.width, inner.height);
+    } else {
+        log::warn!("[OVERLAY:5]   inner_size: FAILED TO READ");
+    }
+
+    // Outer size
+    if let Ok(outer) = overlay.outer_size() {
+        log::info!("[OVERLAY:5]   outer_size: {:.0}x{:.0}", outer.width, outer.height);
+    } else {
+        log::warn!("[OVERLAY:5]   outer_size: FAILED TO READ");
+    }
+
+    // Position
+    if let Ok(pos) = overlay.outer_position() {
+        log::info!("[OVERLAY:5]   outer_position: ({:.0}, {:.0})", pos.x, pos.y);
+    } else {
+        log::warn!("[OVERLAY:5]   outer_position: FAILED TO READ");
+    }
+
+    // Scale factor
+    let scale = overlay.scale_factor().unwrap_or(1.0);
+    log::info!("[OVERLAY:5]   scale_factor: {:.2}", scale);
+
+    // HWND
+    let hwnd_result = overlay.hwnd();
+    match hwnd_result {
+        Ok(hwnd) => {
+            log::info!("[OVERLAY:5]   hwnd: {:?} (0x{:X})", hwnd.0, hwnd.0 as isize);
+        }
+        Err(e) => {
+            log::warn!("[OVERLAY:5]   hwnd: FAILED TO GET ({})", e);
+        }
+    }
+
+    log::info!("[OVERLAY:5] OVERLAY_CREATE_SUCCESS");
+    log::info!("[OVERLAY:5] Window created but NOT YET VISIBLE — will be shown on show_native_overlay");
+    log::info!("[OVERLAY:5] NOTE: WebView content (overlay.html) loads asynchronously after window is shown");
+
     Ok(overlay)
 }
 
@@ -4168,8 +4239,9 @@ fn create_overlay_window(_app: &tauri::AppHandle) -> Result<tauri::WebviewWindow
     Err("Overlay window only supported on Windows".into())
 }
 
-/// Command: Show the native overlay window at a given browser-relative position.
-/// Converts viewport-relative physical coords to absolute screen coords.
+/// ─────────────────────────────────────────────────────────────────────────────
+/// PHASE 3 + 6: Command with comprehensive checkpoint logging and HWND forensics
+/// ─────────────────────────────────────────────────────────────────────────────
 #[tauri::command]
 fn show_native_overlay(
     app: tauri::AppHandle,
@@ -4180,131 +4252,314 @@ fn show_native_overlay(
     height: i32,
 ) -> Result<String, String> {
     use windows::Win32::Foundation::{HWND as RawHWND, RECT};
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        GetWindowRect, SetWindowPos, IsWindowVisible, IsWindow,
+        GetClassNameW, GetWindowLongW, GetWindowThreadProcessId,
+        GWL_STYLE, GWL_EXSTYLE,
     };
+    use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
 
-    log::info!(
-        "[OVERLAY_WINDOW] show_native_overlay: type={} viewport=({},{}) size=({}x{})",
-        overlay_type, viewport_x, viewport_y, width, height
-    );
+    // ── PHASE 3: Checkpoint 1 — Command entered ────────────────────────────────
+    log::info!("");
+    log::info!("═══════════════════════════════════════════════════════════");
+    log::info!("[OVERLAY:1] COMMAND_ENTERED");
+    log::info!("  show_native_overlay() ENTERED");
+    log::info!("[OVERLAY:1] ════════════════════════════════════════════════");
 
-    let state = app.state::<OverlayWindowState>();
-    let main_window = app.get_webview_window("main").ok_or("Main window not found")?;
+    // ── PHASE 3: Checkpoint 2 — Request args ───────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:2] REQUEST_ARGS");
+    log::info!("  overlay_type: \"{}\"", overlay_type);
+    log::info!("  viewport_x:   {}", viewport_x);
+    log::info!("  viewport_y:   {}", viewport_y);
+    log::info!("  width:        {}", width);
+    log::info!("  height:       {}", height);
 
-    // Lazily create overlay window.
-    let overlay_window = {
-        let mut opt = state.window.lock().unwrap();
-        if let Some(ref w) = *opt {
-            w.clone()
-        } else {
-            let w = create_overlay_window(&app)?;
-            *opt = Some(w.clone());
-            w
+    // ── PHASE 3: Checkpoint 3 — Main window lookup ─────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:3] MAIN_WINDOW_LOOKUP");
+    let main_window = app.get_webview_window("main");
+    match &main_window {
+        Some(w) => log::info!("[OVERLAY:3]   main window: FOUND (label=\"{}\")", w.label()),
+        None => {
+            log::error!("[OVERLAY:3]   main window: NOT FOUND");
+            return Err("[OVERLAY:3] Main window 'main' not found".into());
         }
-    };
+    }
+    let main_window = main_window.unwrap();
 
-    // Get main window screen rect (PHYSICAL pixels from Win32).
-    let main_hwnd_raw = main_window.hwnd().map_err(|e| format!("hwnd error: {}", e))?;
+    // Get main window HWND
+    let main_hwnd_raw = main_window.hwnd()
+        .map_err(|e| {
+            log::error!("[OVERLAY:3]   hwnd FAILED: {}", e);
+            format!("hwnd error: {}", e)
+        })?;
     let main_hwnd = RawHWND(main_hwnd_raw.0);
+    log::info!("[OVERLAY:3]   main_hwnd: 0x{:X}", main_hwnd.0 as isize);
 
+    // Get main window rect
     let mut main_rect = RECT::default();
     unsafe {
-        if GetWindowRect(main_hwnd, &mut main_rect).is_err() {
-            return Err("[OVERLAY_WINDOW] Failed to get main window rect".into());
+        let r = GetWindowRect(main_hwnd, &mut main_rect);
+        if r.is_ok() {
+            log::info!("[OVERLAY:3]   main_rect: ({},{}) → ({},{}) size=({}x{})",
+                main_rect.left, main_rect.top,
+                main_rect.right, main_rect.bottom,
+                main_rect.right - main_rect.left,
+                main_rect.bottom - main_rect.top
+            );
+        } else {
+            log::error!("[OVERLAY:3]   GetWindowRect FAILED");
+            return Err("[OVERLAY:3] Failed to get main window rect".into());
         }
     }
 
-    // Store browser offset: how far the browser WRY starts below the main window top.
-    // Browser WRY is at LogicalPosition::new(0.0, UI_HEIGHT) inside main window client area.
-    // UI_HEIGHT = 88 logical, but we receive viewport_y already as browser-WRY-local.
-    // viewport_y already accounts for being below UI bar in browser-local coords.
+    let state = app.state::<OverlayWindowState>();
+
+    // ── PHASE 3: Checkpoint 4 — Existing overlay lookup ───────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:4] EXISTING_OVERLAY_LOOKUP");
+    let (is_new, overlay_window) = {
+        let mut opt = state.window.lock().unwrap();
+        match &*opt {
+            Some(w) => {
+                log::info!("[OVERLAY:4]   existing overlay window: FOUND (label=\"{}\")", w.label());
+                log::info!("[OVERLAY:4]   reusing existing window");
+                (false, w.clone())
+            }
+            None => {
+                log::info!("[OVERLAY:4]   no existing overlay window, creating new one...");
+                match create_overlay_window(&app) {
+                    Ok(w) => {
+                        log::info!("[OVERLAY:4]   create_overlay_window() returned OK");
+                        *opt = Some(w.clone());
+                        (true, w.clone())
+                    }
+                    Err(e) => {
+                        log::error!("[OVERLAY:4]   create_overlay_window() FAILED: {}", e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    };
+
+    // ── PHASE 3: Checkpoint 5 — Overlay window verification ────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:5] OVERLAY_WEBVIEW_VERIFICATION");
+    log::info!("[OVERLAY:5]   label: \"{}\"", overlay_window.label());
+    let is_visible_before = overlay_window.is_visible().unwrap_or(false);
+    log::info!("[OVERLAY:5]   is_visible (before show): {}", is_visible_before);
+
+    // Get overlay HWND
+    let overlay_hwnd_raw = overlay_window.hwnd()
+        .map_err(|e| {
+            log::error!("[OVERLAY:5]   hwnd FAILED: {}", e);
+            format!("hwnd error: {}", e)
+        })?;
+    let overlay_hwnd = RawHWND(overlay_hwnd_raw.0);
+    log::info!("[OVERLAY:5]   overlay_hwnd: 0x{:X}", overlay_hwnd.0 as isize);
+
+    // ── PHASE 3: Checkpoint 6 — Geometry calculation ─────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:6] GEOMETRY_CALCULATION");
+
+    // Initialize/retrieve browser offset
     {
         let mut bo = state.browser_offset_y.lock().unwrap();
         if *bo == 0 {
-            // Calculate: viewport_y of 0 means top of browser WRY.
-            // So browser_offset_y = main_rect.top + (viewport_y_offset_from_rect_top * scale_inv)
-            // Since we receive browser-local coords, the offset is embedded in the conversion.
-            // Actually: browser WRY local (0,0) = main window client (0, UI_HEIGHT_logical).
-            // In physical: browser_wry_top_physical = main_rect.top + (viewport_y_raw / scale).
-            // But we already know viewport_y is in browser-WRY-local PHYSICAL coords.
-            // So: screen_x = main_rect.left + viewport_x
-            //     screen_y = main_rect.top + browser_WRY_offset + viewport_y
-            // where browser_WRY_offset = UI_HEIGHT_physical
             let scale = main_window.scale_factor().unwrap_or(1.0);
             *bo = (88.0 * scale) as i32;
-            log::info!(
-                "[OVERLAY_WINDOW] Main window: screen=({},{} {}x{}) scale={:.2} browser_offset_y={}",
-                main_rect.left, main_rect.top,
-                main_rect.right - main_rect.left,
-                main_rect.bottom - main_rect.top,
-                scale, *bo
-            );
+            log::info!("[OVERLAY:6]   browser_offset_y initialized to {} (88 * {:.2})", *bo, scale);
+        } else {
+            log::info!("[OVERLAY:6]   browser_offset_y already set: {}", *bo);
         }
     }
-
     let browser_offset_y = *state.browser_offset_y.lock().unwrap();
 
-    // Calculate overlay screen position (PHYSICAL pixels).
-    // viewport_x/viewport_y are already browser-WRY-local physical coords from React.
-    // Browser WRY top-left on screen = main_rect.left, main_rect.top + browser_offset_y
+    // Calculate screen position
     let screen_x = main_rect.left + viewport_x;
     let screen_y = main_rect.top + browser_offset_y + viewport_y;
-
-    // Enforce minimum size.
     let w = width.max(200);
     let h = height.max(100);
 
-    log::info!(
-        "[OVERLAY_WINDOW] Positioning: main=({},{}) browser_offset={} viewport=({},{}) → screen=({},{}) size=({}x{})",
-        main_rect.left, main_rect.top, browser_offset_y,
-        viewport_x, viewport_y,
-        screen_x, screen_y, w, h
-    );
+    log::info!("[OVERLAY:6]   main_window_screen: ({}, {})", main_rect.left, main_rect.top);
+    log::info!("[OVERLAY:6]   browser_offset_y: {}", browser_offset_y);
+    log::info!("[OVERLAY:6]   viewport_x: {}  viewport_y: {}", viewport_x, viewport_y);
+    log::info!("[OVERLAY:6]   → screen_x: {}  screen_y: {}", screen_x, screen_y);
+    log::info!("[OVERLAY:6]   size: {}x{} (enforced min 200x100)", w, h);
 
-    // Get overlay HWND and apply position + size.
-    let overlay_hwnd_raw = overlay_window.hwnd()
-        .map_err(|e| format!("[OVERLAY_WINDOW] hwnd error: {}", e))?;
-    let overlay_hwnd = RawHWND(overlay_hwnd_raw.0);
+    // ── PHASE 3: Checkpoint 7 — Before SetWindowPos ───────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:7] BEFORE_SETWINDOWPOS");
+    log::info!("[OVERLAY:7]   Calling SetWindowPos(HWND_TOPMOST, {}, {}, {}x{})", screen_x, screen_y, w, h);
 
+    // Apply geometry via SetWindowPos
     unsafe {
-        SetWindowPos(
+        let setwp_result = SetWindowPos(
             overlay_hwnd,
             Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST),
             screen_x,
             screen_y,
             w,
             h,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        ).map_err(|e| format!("[OVERLAY_WINDOW] SetWindowPos failed: {}", e))?;
+            windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
+                | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+        );
+
+        match setwp_result {
+            Ok(()) => log::info!("[OVERLAY:7]   SetWindowPos: OK"),
+            Err(e) => {
+                log::error!("[OVERLAY:7]   SetWindowPos: FAILED ({})", e);
+                return Err(format!("[OVERLAY:7] SetWindowPos failed: {}", e));
+            }
+        }
     }
 
-    // Show the overlay window.
-    overlay_window.show()
-        .map_err(|e| format!("[OVERLAY_WINDOW] show failed: {}", e))?;
+    // ── PHASE 3: Checkpoint 8 — Show the window ────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:8] BEFORE_SHOW");
+    log::info!("[OVERLAY:8]   Calling overlay_window.show()...");
 
-    // Ensure it stays on top.
-    overlay_window.set_always_on_top(true)
-        .map_err(|e| format!("[OVERLAY_WINDOW] always_on_top failed: {}", e))?;
+    match overlay_window.show() {
+        Ok(()) => log::info!("[OVERLAY:8]   show(): OK"),
+        Err(e) => {
+            log::error!("[OVERLAY:8]   show(): FAILED ({})", e);
+            return Err(format!("[OVERLAY:8] show failed: {}", e));
+        }
+    }
 
-    // Focus the main window (so overlay doesn't steal focus from browser).
+    // ── PHASE 3: Checkpoint 9 — After show ─────────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:9] AFTER_SHOW");
+    match overlay_window.is_visible() {
+        Ok(v) => log::info!("[OVERLAY:9]   is_visible: {}", v),
+        Err(e) => log::warn!("[OVERLAY:9]   is_visible check FAILED: {}", e),
+    }
+
+    // ── PHASE 6: HWND Forensics ───────────────────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:HWND] ══════════════════════════════════════════════");
+    log::info!("[OVERLAY:HWND] HWND FORENSICS");
+    log::info!("[OVERLAY:HWND] ══════════════════════════════════════════════");
+    log::info!("[OVERLAY:HWND] overlay_hwnd: 0x{:X}", overlay_hwnd.0 as isize);
+
+    // IsWindow
+    let is_window = unsafe { IsWindow(Some(overlay_hwnd)).as_bool() };
+    log::info!("[OVERLAY:HWND] IsWindow: {}", is_window);
+
+    // IsWindowVisible
+    let is_visible = unsafe { IsWindowVisible(overlay_hwnd).as_bool() };
+    log::info!("[OVERLAY:HWND] IsWindowVisible: {}", is_visible);
+
+    // GetWindowRect
+    let mut overlay_rect = RECT::default();
+    let rect_ok = unsafe { GetWindowRect(overlay_hwnd, &mut overlay_rect) }.is_ok();
+    if rect_ok {
+        log::info!("[OVERLAY:HWND] GetWindowRect: ({},{}) → ({},{}) size=({}x{})",
+            overlay_rect.left, overlay_rect.top,
+            overlay_rect.right, overlay_rect.bottom,
+            overlay_rect.right - overlay_rect.left,
+            overlay_rect.bottom - overlay_rect.top
+        );
+    } else {
+        log::error!("[OVERLAY:HWND] GetWindowRect: FAILED");
+    }
+
+    // Class name
+    {
+        let mut class_buf = [0u16; 128];
+        let len = unsafe { GetClassNameW(overlay_hwnd, &mut class_buf) };
+        let class_name = if len > 0 {
+            String::from_utf16_lossy(&class_buf[..len as usize])
+        } else {
+            "?".to_string()
+        };
+        log::info!("[OVERLAY:HWND] class_name: \"{}\"", class_name);
+    }
+
+    // GWL_STYLE
+    let style = unsafe { GetWindowLongW(overlay_hwnd, GWL_STYLE) };
+    log::info!("[OVERLAY:HWND] GWL_STYLE: 0x{:X}", style);
+
+    // GWL_EXSTYLE
+    let exstyle = unsafe { GetWindowLongW(overlay_hwnd, GWL_EXSTYLE) };
+    log::info!("[OVERLAY:HWND] GWL_EXSTYLE: 0x{:X}", exstyle);
+
+    // WindowFromPoint at overlay center
+    if rect_ok {
+        let cx = (overlay_rect.left + overlay_rect.right) / 2;
+        let cy = (overlay_rect.top + overlay_rect.bottom) / 2;
+        let pt = windows::Win32::Foundation::POINT { x: cx, y: cy };
+        let wfpt_hwnd = unsafe { WindowFromPoint(pt) };
+        log::info!("[OVERLAY:HWND] WindowFromPoint at ({}, {}): 0x{:X}", cx, cy, wfpt_hwnd.0 as isize);
+        if wfpt_hwnd == overlay_hwnd {
+            log::info!("[OVERLAY:HWND]   → MATCHES overlay HWND ✓");
+        } else {
+            log::warn!("[OVERLAY:HWND]   → DIFFERENT from overlay HWND!");
+            let mut wf_class_buf = [0u16; 128];
+            let wf_len = unsafe { GetClassNameW(wfpt_hwnd, &mut wf_class_buf) };
+            let wf_class = if wf_len > 0 {
+                String::from_utf16_lossy(&wf_class_buf[..wf_len as usize])
+            } else {
+                "?".to_string()
+            };
+            log::warn!("[OVERLAY:HWND]   WindowFromPoint class: \"{}\"", wf_class);
+        }
+    }
+
+    // ── PHASE 3: Checkpoint 10 — Always on top ────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:10] AFTER_SETWINDOWPOS");
+    match overlay_window.set_always_on_top(true) {
+        Ok(()) => log::info!("[OVERLAY:10] set_always_on_top(true): OK"),
+        Err(e) => log::warn!("[OVERLAY:10] set_always_on_top(true): FAILED ({})", e),
+    }
+
+    // ── PHASE 3: Checkpoint 11 — Final state ───────────────────────────────────
+    log::info!("");
+    log::info!("[OVERLAY:11] FINAL_STATE");
+
+    // Final visibility
+    let final_visible = overlay_window.is_visible().unwrap_or(false);
+    log::info!("[OVERLAY:11] final_is_visible: {}", final_visible);
+
+    // Final rect
+    let mut final_rect = RECT::default();
+    let final_rect_ok = unsafe { GetWindowRect(overlay_hwnd, &mut final_rect).is_ok() };
+    if final_rect_ok {
+        log::info!("[OVERLAY:11] final_rect: ({},{}) → ({},{}) size=({}x{})",
+            final_rect.left, final_rect.top,
+            final_rect.right, final_rect.bottom,
+            final_rect.right - final_rect.left,
+            final_rect.bottom - final_rect.top
+        );
+    }
+
+    // ── Restore focus to main window ─────────────────────────────────────────
     let _ = main_window.set_focus();
+    log::info!("[OVERLAY:11] main_window focus restored");
 
-    log::info!(
-        "[OVERLAY_WINDOW] shown: type={} screen=({},{}) size=({}x{})",
-        overlay_type, screen_x, screen_y, w, h
-    );
+    log::info!("");
+    log::info!("═══════════════════════════════════════════════════════════");
+    log::info!("[OVERLAY:12] COMMAND COMPLETE");
+    log::info!("[OVERLAY:12] overlay_type: \"{}\"", overlay_type);
+    log::info!("[OVERLAY:12] final_screen_pos: ({}, {})", screen_x, screen_y);
+    log::info!("[OVERLAY:12] final_size: {}x{}", w, h);
+    log::info!("[OVERLAY:12] overlay_visible: {}", final_visible);
+    log::info!("[OVERLAY:12] ════════════════════════════════════════════════");
+    log::info!("");
 
     Ok(format!(
-        "[OVERLAY_WINDOW] shown at ({},{}) size=({}x{})",
-        screen_x, screen_y, w, h
+        "[OVERLAY:12] shown at ({},{}) size=({}x{}) visible={}",
+        screen_x, screen_y, w, h, final_visible
     ))
 }
 
 /// Command: Hide the native overlay window.
 #[tauri::command]
 fn hide_native_overlay(app: tauri::AppHandle) -> Result<String, String> {
+    log::info!("[OVERLAY:HIDE] hide_native_overlay() called");
     let state = app.state::<OverlayWindowState>();
     let opt = state.window.lock().unwrap();
 
