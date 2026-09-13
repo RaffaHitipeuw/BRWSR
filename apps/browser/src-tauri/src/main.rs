@@ -4134,102 +4134,65 @@ impl Default for OverlayWindowState {
     }
 }
 
+/// Debug overlay window state — holds the debug-overlay WebviewWindow reference.
+struct DebugOverlayState {
+    window: Mutex<Option<tauri::WebviewWindow>>,
+}
+
+impl Default for DebugOverlayState {
+    fn default() -> Self {
+        Self {
+            window: Mutex::new(None),
+        }
+    }
+}
+
 /// ─────────────────────────────────────────────────────────────────────────────
-/// PHASE 4: Window creation validation with full property verification
+/// Create the native overlay WebviewWindow.
+/// Window starts HIDDEN and is shown via show() call.
+/// Uses skip_taskbar=true to keep it out of the Windows taskbar.
 /// ─────────────────────────────────────────────────────────────────────────────
 #[cfg(target_os = "windows")]
 fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     use tauri::WebviewWindowBuilder;
     use tauri::WebviewUrl;
 
-    log::info!("[OVERLAY:5] OVERLAY_CREATE_BEGIN");
-    log::info!("[OVERLAY:5] WebviewWindowBuilder::new() starting...");
-    log::info!("[OVERLAY:5]   label: \"overlay\"");
-    log::info!("[OVERLAY:5]   url: src/overlay.html");
-    log::info!("[OVERLAY:5]   inner_size: 288x320 (initial, will be resized)");
-    log::info!("[OVERLAY:5]   decorations: false");
-    log::info!("[OVERLAY:5]   transparent: true");
-    log::info!("[OVERLAY:5]   always_on_top: true");
-    log::info!("[OVERLAY:5]   visible: false (initially hidden)");
-    log::info!("[OVERLAY:5]   skip_taskbar: true");
-    log::info!("[OVERLAY:5]   focused: false");
+    const PRODUCTION_WINDOW_LABEL: &str = "native-overlay";
 
-    let builder = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("src/overlay.html".into()))
-        .title("EduOS Overlay")
-        .inner_size(288.0, 320.0)
-        .min_inner_size(100.0, 100.0)
-        .resizable(false)
+    log::info!("[NATIVE-OVERLAY] CREATE_NEW_WINDOW label={}", PRODUCTION_WINDOW_LABEL);
+
+    // Production window configuration:
+    // - decorations(false): no title bar
+    // - transparent(false): solid background (works reliably)
+    // - always_on_top(true): stays above other windows
+    // - visible(false): starts hidden, shown via .show()
+    // - skip_taskbar(true): hidden from Windows taskbar
+    let builder = WebviewWindowBuilder::new(app, PRODUCTION_WINDOW_LABEL, WebviewUrl::App("src/overlay.html".into()))
+        .title("EduOS Menu")
+        .inner_size(288.0, 350.0)
         .decorations(false)
-        .transparent(true)
+        .transparent(false)
         .always_on_top(true)
         .visible(false)
-        .skip_taskbar(true)
-        .focused(false);
+        .skip_taskbar(true);
 
-    log::info!("[OVERLAY:5] Builder created, calling build()...");
+    log::info!("[NATIVE-OVERLAY] Builder created, calling build()...");
 
     let overlay = builder.build()
         .map_err(|e| {
-            log::error!("[OVERLAY:5] BUILD FAILED: {}", e);
-            format!("[OVERLAY:5] Failed to create overlay window: {}", e)
+            log::error!("[NATIVE-OVERLAY] CREATE_FAILED: {}", e);
+            format!("[NATIVE-OVERLAY] Failed to create overlay window: {}", e)
         })?;
 
-    // ── PHASE 4: Verify window properties ──────────────────────────────────────
-    log::info!("[OVERLAY:5] BUILD SUCCESS, verifying window properties...");
-
-    // Label
-    let label = overlay.label();
-    log::info!("[OVERLAY:5]   label: \"{}\" (expected: \"overlay\")", label);
-
-    // Visibility
+    log::info!("[NATIVE-OVERLAY] CREATE_SUCCESS label={}", overlay.label());
     let is_visible = overlay.is_visible().unwrap_or(false);
-    log::info!("[OVERLAY:5]   is_visible: {} (expected: false initially)", is_visible);
+    log::info!("[NATIVE-OVERLAY] initial_visibility={} (expected: false)", is_visible);
 
-    // Minimized/maximized
-    let is_minimized = overlay.is_minimized().unwrap_or(false);
-    let is_maximized = overlay.is_maximized().unwrap_or(false);
-    log::info!("[OVERLAY:5]   is_minimized: {}", is_minimized);
-    log::info!("[OVERLAY:5]   is_maximized: {}", is_maximized);
-
-    // Inner size
-    if let Ok(inner) = overlay.inner_size() {
-        log::info!("[OVERLAY:5]   inner_size: {:.0}x{:.0}", inner.width, inner.height);
-    } else {
-        log::warn!("[OVERLAY:5]   inner_size: FAILED TO READ");
+    if let Ok(hwnd) = overlay.hwnd() {
+        log::info!("[NATIVE-OVERLAY] hwnd=0x{:X}", hwnd.0 as isize);
     }
 
-    // Outer size
-    if let Ok(outer) = overlay.outer_size() {
-        log::info!("[OVERLAY:5]   outer_size: {:.0}x{:.0}", outer.width, outer.height);
-    } else {
-        log::warn!("[OVERLAY:5]   outer_size: FAILED TO READ");
-    }
-
-    // Position
-    if let Ok(pos) = overlay.outer_position() {
-        log::info!("[OVERLAY:5]   outer_position: ({:.0}, {:.0})", pos.x, pos.y);
-    } else {
-        log::warn!("[OVERLAY:5]   outer_position: FAILED TO READ");
-    }
-
-    // Scale factor
-    let scale = overlay.scale_factor().unwrap_or(1.0);
-    log::info!("[OVERLAY:5]   scale_factor: {:.2}", scale);
-
-    // HWND
-    let hwnd_result = overlay.hwnd();
-    match hwnd_result {
-        Ok(hwnd) => {
-            log::info!("[OVERLAY:5]   hwnd: {:?} (0x{:X})", hwnd.0, hwnd.0 as isize);
-        }
-        Err(e) => {
-            log::warn!("[OVERLAY:5]   hwnd: FAILED TO GET ({})", e);
-        }
-    }
-
-    log::info!("[OVERLAY:5] OVERLAY_CREATE_SUCCESS");
-    log::info!("[OVERLAY:5] Window created but NOT YET VISIBLE — will be shown on show_native_overlay");
-    log::info!("[OVERLAY:5] NOTE: WebView content (overlay.html) loads asynchronously after window is shown");
+    log::info!("[NATIVE-OVERLAY] CREATE_COMPLETE");
 
     Ok(overlay)
 }
@@ -4240,10 +4203,11 @@ fn create_overlay_window(_app: &tauri::AppHandle) -> Result<tauri::WebviewWindow
 }
 
 /// ─────────────────────────────────────────────────────────────────────────────
-/// PHASE 3 + 6: Command with comprehensive checkpoint logging and HWND forensics
+/// Command: Show the native overlay window at the given screen position.
+/// Creates the window on first call, reuses on subsequent calls.
 /// ─────────────────────────────────────────────────────────────────────────────
 #[tauri::command]
-fn show_native_overlay(
+async fn show_native_overlay(
     app: tauri::AppHandle,
     overlay_type: String,
     viewport_x: i32,
@@ -4251,152 +4215,79 @@ fn show_native_overlay(
     width: i32,
     height: i32,
 ) -> Result<String, String> {
+    use tauri::Manager;
     use windows::Win32::Foundation::{HWND as RawHWND, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, SetWindowPos, IsWindowVisible, IsWindow,
-        GetClassNameW, GetWindowLongW, GetWindowThreadProcessId,
-        GWL_STYLE, GWL_EXSTYLE,
+        GetWindowRect, SetWindowPos, IsWindowVisible,
     };
-    use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
 
-    // ── PHASE 3: Checkpoint 1 — Command entered ────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // [NATIVE-OVERLAY] Deterministic production logging
+    // ═══════════════════════════════════════════════════════════════════════════════
     log::info!("");
-    log::info!("═══════════════════════════════════════════════════════════");
-    log::info!("[OVERLAY:1] COMMAND_ENTERED");
-    log::info!("  show_native_overlay() ENTERED");
-    log::info!("[OVERLAY:1] ════════════════════════════════════════════════");
-
-    // ── PHASE 3: Checkpoint 2 — Request args ───────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:2] REQUEST_ARGS");
-    log::info!("  overlay_type: \"{}\"", overlay_type);
-    log::info!("  viewport_x:   {}", viewport_x);
-    log::info!("  viewport_y:   {}", viewport_y);
-    log::info!("  width:        {}", width);
-    log::info!("  height:       {}", height);
-
-    // ── PHASE 3: Checkpoint 3 — Main window lookup ─────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:3] MAIN_WINDOW_LOOKUP");
-    let main_window = app.get_webview_window("main");
-    match &main_window {
-        Some(w) => log::info!("[OVERLAY:3]   main window: FOUND (label=\"{}\")", w.label()),
-        None => {
-            log::error!("[OVERLAY:3]   main window: NOT FOUND");
-            return Err("[OVERLAY:3] Main window 'main' not found".into());
-        }
-    }
-    let main_window = main_window.unwrap();
-
-    // Get main window HWND
-    let main_hwnd_raw = main_window.hwnd()
-        .map_err(|e| {
-            log::error!("[OVERLAY:3]   hwnd FAILED: {}", e);
-            format!("hwnd error: {}", e)
-        })?;
-    let main_hwnd = RawHWND(main_hwnd_raw.0);
-    log::info!("[OVERLAY:3]   main_hwnd: 0x{:X}", main_hwnd.0 as isize);
-
-    // Get main window rect
-    let mut main_rect = RECT::default();
-    unsafe {
-        let r = GetWindowRect(main_hwnd, &mut main_rect);
-        if r.is_ok() {
-            log::info!("[OVERLAY:3]   main_rect: ({},{}) → ({},{}) size=({}x{})",
-                main_rect.left, main_rect.top,
-                main_rect.right, main_rect.bottom,
-                main_rect.right - main_rect.left,
-                main_rect.bottom - main_rect.top
-            );
-        } else {
-            log::error!("[OVERLAY:3]   GetWindowRect FAILED");
-            return Err("[OVERLAY:3] Failed to get main window rect".into());
-        }
-    }
+    log::info!("[NATIVE-OVERLAY] ════════════════════════════════════════════");
+    log::info!("[NATIVE-OVERLAY] SHOW_REQUEST overlay_type={}", overlay_type);
+    log::info!("[NATIVE-OVERLAY] viewport=({},{}) size=({}x{})", viewport_x, viewport_y, width, height);
 
     let state = app.state::<OverlayWindowState>();
 
-    // ── PHASE 3: Checkpoint 4 — Existing overlay lookup ───────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:4] EXISTING_OVERLAY_LOOKUP");
-    let (is_new, overlay_window) = {
-        let mut opt = state.window.lock().unwrap();
-        match &*opt {
-            Some(w) => {
-                log::info!("[OVERLAY:4]   existing overlay window: FOUND (label=\"{}\")", w.label());
-                log::info!("[OVERLAY:4]   reusing existing window");
-                (false, w.clone())
-            }
-            None => {
-                log::info!("[OVERLAY:4]   no existing overlay window, creating new one...");
-                match create_overlay_window(&app) {
-                    Ok(w) => {
-                        log::info!("[OVERLAY:4]   create_overlay_window() returned OK");
-                        *opt = Some(w.clone());
-                        (true, w.clone())
-                    }
-                    Err(e) => {
-                        log::error!("[OVERLAY:4]   create_overlay_window() FAILED: {}", e);
-                        return Err(e);
-                    }
-                }
-            }
+    // ── Check if window exists ─────────────────────────────────────────────
+    let window_exists = {
+        let opt = state.window.lock().unwrap();
+        opt.is_some()
+    };
+    log::info!("[NATIVE-OVERLAY] WINDOW_EXISTS={}", window_exists);
+
+    // ── Create or reuse overlay window ─────────────────────────────────────
+    let overlay = {
+        if window_exists {
+            log::info!("[NATIVE-OVERLAY] REUSE_EXISTING_WINDOW");
+            let opt = state.window.lock().unwrap();
+            opt.as_ref().unwrap().clone()
+        } else {
+            log::info!("[NATIVE-OVERLAY] CREATE_NEW_WINDOW");
+            let w = create_overlay_window(&app)?;
+            let mut opt = state.window.lock().unwrap();
+            *opt = Some(w.clone());
+            w
         }
     };
 
-    // ── PHASE 3: Checkpoint 5 — Overlay window verification ────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:5] OVERLAY_WEBVIEW_VERIFICATION");
-    log::info!("[OVERLAY:5]   label: \"{}\"", overlay_window.label());
-    let is_visible_before = overlay_window.is_visible().unwrap_or(false);
-    log::info!("[OVERLAY:5]   is_visible (before show): {}", is_visible_before);
+    log::info!("[NATIVE-OVERLAY] window_label={}", overlay.label());
 
-    // Get overlay HWND
-    let overlay_hwnd_raw = overlay_window.hwnd()
-        .map_err(|e| {
-            log::error!("[OVERLAY:5]   hwnd FAILED: {}", e);
-            format!("hwnd error: {}", e)
-        })?;
-    let overlay_hwnd = RawHWND(overlay_hwnd_raw.0);
-    log::info!("[OVERLAY:5]   overlay_hwnd: 0x{:X}", overlay_hwnd.0 as isize);
+    // ── Get main window HWND ────────────────────────────────────────────────
+    let main_window = app.get_window("main")
+        .ok_or_else(|| "[NATIVE-OVERLAY] get_window('main') returned None".to_string())?;
+    let main_hwnd_raw = main_window.hwnd()
+        .map_err(|e| format!("hwnd error: {}", e))?;
+    let main_hwnd = RawHWND(main_hwnd_raw.0);
 
-    // ── PHASE 3: Checkpoint 6 — Geometry calculation ─────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:6] GEOMETRY_CALCULATION");
-
-    // Initialize/retrieve browser offset
-    {
-        let mut bo = state.browser_offset_y.lock().unwrap();
-        if *bo == 0 {
-            let scale = main_window.scale_factor().unwrap_or(1.0);
-            *bo = (88.0 * scale) as i32;
-            log::info!("[OVERLAY:6]   browser_offset_y initialized to {} (88 * {:.2})", *bo, scale);
-        } else {
-            log::info!("[OVERLAY:6]   browser_offset_y already set: {}", *bo);
+    // ── Get main window rect ───────────────────────────────────────────────
+    let mut main_rect = RECT::default();
+    unsafe {
+        if GetWindowRect(main_hwnd, &mut main_rect).is_err() {
+            return Err("[NATIVE-OVERLAY] Failed to get main window rect".into());
         }
     }
-    let browser_offset_y = *state.browser_offset_y.lock().unwrap();
+    log::info!("[NATIVE-OVERLAY] main_rect=({},{})→({},{})",
+        main_rect.left, main_rect.top, main_rect.right, main_rect.bottom);
 
-    // Calculate screen position
+    // ── Calculate screen position ─────────────────────────────────────────
+    let browser_offset_y = *state.browser_offset_y.lock().unwrap();
     let screen_x = main_rect.left + viewport_x;
     let screen_y = main_rect.top + browser_offset_y + viewport_y;
     let w = width.max(200);
     let h = height.max(100);
 
-    log::info!("[OVERLAY:6]   main_window_screen: ({}, {})", main_rect.left, main_rect.top);
-    log::info!("[OVERLAY:6]   browser_offset_y: {}", browser_offset_y);
-    log::info!("[OVERLAY:6]   viewport_x: {}  viewport_y: {}", viewport_x, viewport_y);
-    log::info!("[OVERLAY:6]   → screen_x: {}  screen_y: {}", screen_x, screen_y);
-    log::info!("[OVERLAY:6]   size: {}x{} (enforced min 200x100)", w, h);
+    log::info!("[NATIVE-OVERLAY] UPDATE_GEOMETRY screen=({},{}) size=({}x{})", screen_x, screen_y, w, h);
 
-    // ── PHASE 3: Checkpoint 7 — Before SetWindowPos ───────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:7] BEFORE_SETWINDOWPOS");
-    log::info!("[OVERLAY:7]   Calling SetWindowPos(HWND_TOPMOST, {}, {}, {}x{})", screen_x, screen_y, w, h);
+    // ── Get overlay HWND and set position ──────────────────────────────────
+    let overlay_hwnd_raw = overlay.hwnd()
+        .map_err(|e| format!("hwnd error: {}", e))?;
+    let overlay_hwnd = RawHWND(overlay_hwnd_raw.0);
 
-    // Apply geometry via SetWindowPos
     unsafe {
-        let setwp_result = SetWindowPos(
+        let r = SetWindowPos(
             overlay_hwnd,
             Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST),
             screen_x,
@@ -4406,170 +4297,55 @@ fn show_native_overlay(
             windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
                 | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
         );
-
-        match setwp_result {
-            Ok(()) => log::info!("[OVERLAY:7]   SetWindowPos: OK"),
-            Err(e) => {
-                log::error!("[OVERLAY:7]   SetWindowPos: FAILED ({})", e);
-                return Err(format!("[OVERLAY:7] SetWindowPos failed: {}", e));
-            }
+        if r.is_err() {
+            return Err("[NATIVE-OVERLAY] SetWindowPos failed".into());
         }
     }
+    log::info!("[NATIVE-OVERLAY] SetWindowPos OK");
 
-    // ── PHASE 3: Checkpoint 8 — Show the window ────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:8] BEFORE_SHOW");
-    log::info!("[OVERLAY:8]   Calling overlay_window.show()...");
+    // ── Show the window ───────────────────────────────────────────────────
+    overlay.show()
+        .map_err(|e| format!("show failed: {}", e))?;
+    log::info!("[NATIVE-OVERLAY] show() OK");
 
-    match overlay_window.show() {
-        Ok(()) => log::info!("[OVERLAY:8]   show(): OK"),
-        Err(e) => {
-            log::error!("[OVERLAY:8]   show(): FAILED ({})", e);
-            return Err(format!("[OVERLAY:8] show failed: {}", e));
-        }
-    }
+    overlay.set_always_on_top(true)
+        .map_err(|e| format!("set_always_on_top failed: {}", e))?;
+    log::info!("[NATIVE-OVERLAY] set_always_on_top OK");
 
-    // ── PHASE 3: Checkpoint 9 — After show ─────────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:9] AFTER_SHOW");
-    match overlay_window.is_visible() {
-        Ok(v) => log::info!("[OVERLAY:9]   is_visible: {}", v),
-        Err(e) => log::warn!("[OVERLAY:9]   is_visible check FAILED: {}", e),
-    }
-
-    // ── PHASE 6: HWND Forensics ───────────────────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:HWND] ══════════════════════════════════════════════");
-    log::info!("[OVERLAY:HWND] HWND FORENSICS");
-    log::info!("[OVERLAY:HWND] ══════════════════════════════════════════════");
-    log::info!("[OVERLAY:HWND] overlay_hwnd: 0x{:X}", overlay_hwnd.0 as isize);
-
-    // IsWindow
-    let is_window = unsafe { IsWindow(Some(overlay_hwnd)).as_bool() };
-    log::info!("[OVERLAY:HWND] IsWindow: {}", is_window);
-
-    // IsWindowVisible
+    // ── Verify visibility ─────────────────────────────────────────────────
     let is_visible = unsafe { IsWindowVisible(overlay_hwnd).as_bool() };
-    log::info!("[OVERLAY:HWND] IsWindowVisible: {}", is_visible);
+    log::info!("[NATIVE-OVERLAY] is_visible={}", is_visible);
 
-    // GetWindowRect
-    let mut overlay_rect = RECT::default();
-    let rect_ok = unsafe { GetWindowRect(overlay_hwnd, &mut overlay_rect) }.is_ok();
-    if rect_ok {
-        log::info!("[OVERLAY:HWND] GetWindowRect: ({},{}) → ({},{}) size=({}x{})",
-            overlay_rect.left, overlay_rect.top,
-            overlay_rect.right, overlay_rect.bottom,
-            overlay_rect.right - overlay_rect.left,
-            overlay_rect.bottom - overlay_rect.top
-        );
-    } else {
-        log::error!("[OVERLAY:HWND] GetWindowRect: FAILED");
-    }
-
-    // Class name
-    {
-        let mut class_buf = [0u16; 128];
-        let len = unsafe { GetClassNameW(overlay_hwnd, &mut class_buf) };
-        let class_name = if len > 0 {
-            String::from_utf16_lossy(&class_buf[..len as usize])
-        } else {
-            "?".to_string()
-        };
-        log::info!("[OVERLAY:HWND] class_name: \"{}\"", class_name);
-    }
-
-    // GWL_STYLE
-    let style = unsafe { GetWindowLongW(overlay_hwnd, GWL_STYLE) };
-    log::info!("[OVERLAY:HWND] GWL_STYLE: 0x{:X}", style);
-
-    // GWL_EXSTYLE
-    let exstyle = unsafe { GetWindowLongW(overlay_hwnd, GWL_EXSTYLE) };
-    log::info!("[OVERLAY:HWND] GWL_EXSTYLE: 0x{:X}", exstyle);
-
-    // WindowFromPoint at overlay center
-    if rect_ok {
-        let cx = (overlay_rect.left + overlay_rect.right) / 2;
-        let cy = (overlay_rect.top + overlay_rect.bottom) / 2;
-        let pt = windows::Win32::Foundation::POINT { x: cx, y: cy };
-        let wfpt_hwnd = unsafe { WindowFromPoint(pt) };
-        log::info!("[OVERLAY:HWND] WindowFromPoint at ({}, {}): 0x{:X}", cx, cy, wfpt_hwnd.0 as isize);
-        if wfpt_hwnd == overlay_hwnd {
-            log::info!("[OVERLAY:HWND]   → MATCHES overlay HWND ✓");
-        } else {
-            log::warn!("[OVERLAY:HWND]   → DIFFERENT from overlay HWND!");
-            let mut wf_class_buf = [0u16; 128];
-            let wf_len = unsafe { GetClassNameW(wfpt_hwnd, &mut wf_class_buf) };
-            let wf_class = if wf_len > 0 {
-                String::from_utf16_lossy(&wf_class_buf[..wf_len as usize])
-            } else {
-                "?".to_string()
-            };
-            log::warn!("[OVERLAY:HWND]   WindowFromPoint class: \"{}\"", wf_class);
-        }
-    }
-
-    // ── PHASE 3: Checkpoint 10 — Always on top ────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:10] AFTER_SETWINDOWPOS");
-    match overlay_window.set_always_on_top(true) {
-        Ok(()) => log::info!("[OVERLAY:10] set_always_on_top(true): OK"),
-        Err(e) => log::warn!("[OVERLAY:10] set_always_on_top(true): FAILED ({})", e),
-    }
-
-    // ── PHASE 3: Checkpoint 11 — Final state ───────────────────────────────────
-    log::info!("");
-    log::info!("[OVERLAY:11] FINAL_STATE");
-
-    // Final visibility
-    let final_visible = overlay_window.is_visible().unwrap_or(false);
-    log::info!("[OVERLAY:11] final_is_visible: {}", final_visible);
-
-    // Final rect
-    let mut final_rect = RECT::default();
-    let final_rect_ok = unsafe { GetWindowRect(overlay_hwnd, &mut final_rect).is_ok() };
-    if final_rect_ok {
-        log::info!("[OVERLAY:11] final_rect: ({},{}) → ({},{}) size=({}x{})",
-            final_rect.left, final_rect.top,
-            final_rect.right, final_rect.bottom,
-            final_rect.right - final_rect.left,
-            final_rect.bottom - final_rect.top
-        );
-    }
-
-    // ── Restore focus to main window ─────────────────────────────────────────
+    // ── Restore focus to main window ──────────────────────────────────────
     let _ = main_window.set_focus();
-    log::info!("[OVERLAY:11] main_window focus restored");
 
-    log::info!("");
-    log::info!("═══════════════════════════════════════════════════════════");
-    log::info!("[OVERLAY:12] COMMAND COMPLETE");
-    log::info!("[OVERLAY:12] overlay_type: \"{}\"", overlay_type);
-    log::info!("[OVERLAY:12] final_screen_pos: ({}, {})", screen_x, screen_y);
-    log::info!("[OVERLAY:12] final_size: {}x{}", w, h);
-    log::info!("[OVERLAY:12] overlay_visible: {}", final_visible);
-    log::info!("[OVERLAY:12] ════════════════════════════════════════════════");
+    log::info!("[NATIVE-OVERLAY] SHOW_COMPLETE type={} at=({},{}) size=({}x{}) visible={}",
+        overlay_type, screen_x, screen_y, w, h, is_visible);
+    log::info!("[NATIVE-OVERLAY] ════════════════════════════════════════════");
     log::info!("");
 
     Ok(format!(
-        "[OVERLAY:12] shown at ({},{}) size=({}x{}) visible={}",
-        screen_x, screen_y, w, h, final_visible
+        "overlay: type={} at=({},{}) size=({}x{}) visible={} hwnd=0x{:X}",
+        overlay_type, screen_x, screen_y, w, h, is_visible, overlay_hwnd.0 as isize
     ))
 }
 
 /// Command: Hide the native overlay window.
 #[tauri::command]
 fn hide_native_overlay(app: tauri::AppHandle) -> Result<String, String> {
-    log::info!("[OVERLAY:HIDE] hide_native_overlay() called");
+    log::info!("[NATIVE-OVERLAY] HIDE_REQUEST");
+
     let state = app.state::<OverlayWindowState>();
     let opt = state.window.lock().unwrap();
 
     if let Some(ref window) = *opt {
         window.hide()
-            .map_err(|e| format!("[OVERLAY_WINDOW] hide failed: {}", e))?;
-        log::info!("[OVERLAY_WINDOW] hidden");
-        Ok("[OVERLAY_WINDOW] hidden".into())
+            .map_err(|e| format!("[NATIVE-OVERLAY] hide failed: {}", e))?;
+        log::info!("[NATIVE-OVERLAY] HIDE_COMPLETE");
+        Ok("[NATIVE-OVERLAY] hidden".into())
     } else {
-        Ok("[OVERLAY_WINDOW] not created yet".into())
+        log::info!("[NATIVE-OVERLAY] HIDE_COMPLETE (window not created yet)");
+        Ok("[NATIVE-OVERLAY] not created yet".into())
     }
 }
 
@@ -4614,6 +4390,589 @@ fn overlay_navigate(app: tauri::AppHandle, url: String) -> Result<String, String
     }
     log::info!("[OVERLAY_WINDOW] overlay-navigate: {}", url);
     Ok(format!("navigating to {}", url))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MINIMAL WINDOW EXPERIMENT
+// Tests whether WebviewWindow creation hangs when scheduled on Tauri runtime
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Command: Minimal window threading experiment (Ctrl+Shift+M).
+/// Calls WebviewWindowBuilder::build() directly inside an async Tauri IPC command.
+/// This tests whether the hang is specific to sync command context.
+#[tauri::command]
+async fn show_minimal_window_experiment(window: tauri::Window) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::PathBuf;
+    use tauri::Manager;
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    let temp_dir = std::env::var("TEMP")
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| "C:\\Temp".into());
+    let log_path: PathBuf = PathBuf::from(&temp_dir).join("eduos-native-overlay.log");
+
+    let mut log_file = File::create(&log_path)
+        .map_err(|e| format!("failed to create log {}: {}", log_path.display(), e))?;
+
+    macro_rules! log {
+        ($($tt:tt)*) => { {
+            let line = format!($($tt)*);
+            let _ = log_file.write_all(line.as_bytes());
+            let _ = log_file.write_all(b"\n");
+        } };
+    }
+
+    log!("");
+    log!("[MINWIN] ===== MINIMAL WINDOW EXPERIMENT =====");
+    log!("[MINWIN] log_file={}", log_path.display());
+    log!("[MINWIN] COMMAND_ENTERED");
+    log!("[MINWIN] CALLING_WINDOW_LABEL={}", window.label());
+    let app = window.app_handle();
+    log!("[MINWIN] APP_HANDLE_ACQUIRED");
+
+    log!("[MINWIN] BEFORE_BUILDER");
+
+    let app_owned = app.clone();
+    let builder = WebviewWindowBuilder::new(
+        &app_owned,
+        "minimal-window-experiment",
+        WebviewUrl::App("src/minimal-window.html".into()),
+    )
+    .title("MINIMAL WINDOW TEST")
+    .inner_size(400.0, 300.0)
+    .visible(true)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(false)
+    .skip_taskbar(false);
+
+    log!("[MINWIN] BEFORE_BUILD");
+
+    let build_result = builder.build();
+
+    log!("[MINWIN] AFTER_BUILD");
+
+    let _ = log_file.flush();
+
+    match build_result {
+        Ok(w) => {
+            log!("[MINWIN] BUILD_SUCCESS label={} visible={}", w.label(), w.is_visible().unwrap_or(false));
+            log!("[MINWIN] ===== COMPLETE =====");
+            let _ = log_file.flush();
+            Ok(format!("minimal window created: {}", w.label()))
+        }
+        Err(e) => {
+            log!("[MINWIN] BUILD_ERROR={}", e);
+            log!("[MINWIN] ===== FAILED =====");
+            let _ = log_file.flush();
+            Err(format!("build failed: {}", e))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BORDERLESS + ALWAYS_ON_TOP EXPERIMENT
+// Tests whether decorations(false) + always_on_top(true) creates a visible
+// borderless window above the browser WebView.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Command: Minimal borderless always-on-top window experiment (Ctrl+Shift+T).
+/// IDENTICAL to show_minimal_window_experiment EXCEPT:
+///   - decorations(false)
+///   - always_on_top(true)
+///   - unique label "minimal-topmost"
+///   - title "MINIMAL BORDERLESS TOPMOST"
+/// Purpose: isolate whether z-order / always_on_top fixes the invisible borderless window.
+#[tauri::command]
+async fn show_minimal_topmost(window: tauri::Window) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::PathBuf;
+    use tauri::Manager;
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    let temp_dir = std::env::var("TEMP")
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| "C:\\Temp".into());
+    let log_path: PathBuf = PathBuf::from(&temp_dir).join("eduos-native-overlay.log");
+
+    let mut log_file = File::create(&log_path)
+        .map_err(|e| format!("failed to create log {}: {}", log_path.display(), e))?;
+
+    macro_rules! log {
+        ($($tt:tt)*) => { {
+            let line = format!($($tt)*);
+            let _ = log_file.write_all(line.as_bytes());
+            let _ = log_file.write_all(b"\n");
+        } };
+    }
+
+    log!("");
+    log!("[TOPMOST] ===== MINIMAL BORDERLESS TOPMOST EXPERIMENT =====");
+    log!("[TOPMOST] log_file={}", log_path.display());
+    log!("[TOPMOST] COMMAND_ENTERED");
+    log!("[TOPMOST] CALLING_WINDOW_LABEL={}", window.label());
+    let app = window.app_handle();
+    log!("[TOPMOST] APP_HANDLE_ACQUIRED");
+
+    log!("[TOPMOST] BEFORE_BUILDER");
+
+    let app_owned = app.clone();
+    let builder = WebviewWindowBuilder::new(
+        &app_owned,
+        "minimal-topmost",
+        WebviewUrl::App("src/minimal-window.html".into()),
+    )
+    .title("MINIMAL BORDERLESS TOPMOST")
+    .inner_size(400.0, 300.0)
+    .visible(true)
+    .decorations(false)
+    .transparent(false)
+    .always_on_top(true)
+    .skip_taskbar(false);
+
+    log!("[TOPMOST] BEFORE_BUILD");
+
+    let build_result = builder.build();
+
+    log!("[TOPMOST] AFTER_BUILD");
+
+    let _ = log_file.flush();
+
+    match build_result {
+        Ok(w) => {
+            log!("[TOPMOST] BUILD_SUCCESS label={} visible={}", w.label(), w.is_visible().unwrap_or(false));
+            log!("[TOPMOST] ===== COMPLETE =====");
+            let _ = log_file.flush();
+            Ok(format!("minimal-topmost created: {}", w.label()))
+        }
+        Err(e) => {
+            log!("[TOPMOST] BUILD_ERROR={}", e);
+            log!("[TOPMOST] ===== FAILED =====");
+            let _ = log_file.flush();
+            Err(format!("build failed: {}", e))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEBUG OVERLAY — MINIMAL PROOF-OF-CONCEPT
+// Phase 1: Prove a separate WebviewWindow can visibly appear above main window
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Command: Show debug overlay window (Ctrl+Shift+O).
+/// MINIMAL EXPERIMENT: EXACT copy of show_minimal_window_experiment body.
+/// Changes ONLY: label="debug-overlay-copy", URL="src/debug-overlay.html".
+/// Everything else — command structure, AppHandle acquisition, builder options,
+/// log flushing — is IDENTICAL to the working show_minimal_window_experiment.
+/// NO state. NO mutex. NO conditional build. NO forensics before flush.
+#[tauri::command]
+async fn show_debug_overlay(window: tauri::Window) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::PathBuf;
+    use tauri::Manager;
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    let temp_dir = std::env::var("TEMP")
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| "C:\\Temp".into());
+    let log_path: PathBuf = PathBuf::from(&temp_dir).join("eduos-native-overlay.log");
+
+    let mut log_file = File::create(&log_path)
+        .map_err(|e| format!("failed to create log {}: {}", log_path.display(), e))?;
+
+    macro_rules! log {
+        ($($tt:tt)*) => { {
+            let line = format!($($tt)*);
+            let _ = log_file.write_all(line.as_bytes());
+            let _ = log_file.write_all(b"\n");
+        } };
+    }
+
+    log!("");
+    log!("[OVERLAY] ===== DEBUG OVERLAY MINIMAL EXPERIMENT =====");
+    log!("[OVERLAY] log_file={}", log_path.display());
+    log!("[OVERLAY] COMMAND_ENTERED");
+    log!("[OVERLAY] CALLING_WINDOW_LABEL={}", window.label());
+    let app = window.app_handle();
+    log!("[OVERLAY] APP_HANDLE_ACQUIRED");
+
+    log!("[OVERLAY] BEFORE_BUILDER");
+
+    let app_owned = app.clone();
+    let builder = WebviewWindowBuilder::new(
+        &app_owned,
+        "debug-overlay-copy",
+        WebviewUrl::App("src/debug-overlay.html".into()),
+    )
+    .title("Debug Overlay Copy")
+    .inner_size(400.0, 300.0)
+    .visible(true)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(false)
+    .skip_taskbar(false);
+
+    log!("[OVERLAY] BEFORE_BUILD");
+
+    let build_result = builder.build();
+
+    log!("[OVERLAY] AFTER_BUILD");
+
+    let _ = log_file.flush();
+
+    match build_result {
+        Ok(w) => {
+            log!("[OVERLAY] BUILD_SUCCESS label={} visible={}", w.label(), w.is_visible().unwrap_or(false));
+            log!("[OVERLAY] ===== COMPLETE =====");
+            let _ = log_file.flush();
+            Ok(format!("debug-overlay-copy created: {}", w.label()))
+        }
+        Err(e) => {
+            log!("[OVERLAY] BUILD_ERROR={}", e);
+            log!("[OVERLAY] ===== FAILED =====");
+            let _ = log_file.flush();
+            Err(format!("build failed: {}", e))
+        }
+    }
+}
+
+/// Experiment: show_minimal_window_experiment but with decorations(false).
+/// All other options IDENTICAL to the working minimal window.
+/// Changes ONLY: decorations(false).
+/// Purpose: isolate whether decorations=false causes .build() to hang.
+#[tauri::command]
+async fn show_minimal_decorated_false(window: tauri::Window) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::PathBuf;
+    use tauri::Manager;
+    use tauri::WebviewWindowBuilder;
+    use tauri::WebviewUrl;
+
+    let temp_dir = std::env::var("TEMP")
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| "C:\\Temp".into());
+    let log_path: PathBuf = PathBuf::from(&temp_dir).join("eduos-native-overlay.log");
+
+    let mut log_file = File::create(&log_path)
+        .map_err(|e| format!("failed to create log {}: {}", log_path.display(), e))?;
+
+    macro_rules! log {
+        ($($tt:tt)*) => { {
+            let line = format!($($tt)*);
+            let _ = log_file.write_all(line.as_bytes());
+            let _ = log_file.write_all(b"\n");
+        } };
+    }
+
+    log!("");
+    log!("[DECO-FALSE] ===== MINIMAL DECORATED=FALSE EXPERIMENT =====");
+    log!("[DECO-FALSE] log_file={}", log_path.display());
+    log!("[DECO-FALSE] COMMAND_ENTERED");
+    log!("[DECO-FALSE] CALLING_WINDOW_LABEL={}", window.label());
+    let app = window.app_handle();
+    log!("[DECO-FALSE] APP_HANDLE_ACQUIRED");
+
+    log!("[DECO-FALSE] BEFORE_BUILDER");
+
+    let app_owned = app.clone();
+    let builder = WebviewWindowBuilder::new(
+        &app_owned,
+        "minimal-decorated-false",
+        WebviewUrl::App("src/minimal-window.html".into()),
+    )
+    .title("MINIMAL NO DECORATIONS")
+    .inner_size(400.0, 300.0)
+    .visible(true)
+    .decorations(false)
+    .transparent(false)
+    .always_on_top(false)
+    .skip_taskbar(false);
+
+    log!("[DECO-FALSE] BEFORE_BUILD");
+
+    let build_result = builder.build();
+
+    log!("[DECO-FALSE] AFTER_BUILD");
+
+    let _ = log_file.flush();
+
+    match build_result {
+        Ok(w) => {
+            log!("[DECO-FALSE] BUILD_SUCCESS label={} visible={}", w.label(), w.is_visible().unwrap_or(false));
+            log!("[DECO-FALSE] ===== COMPLETE =====");
+            let _ = log_file.flush();
+            Ok(format!("minimal-decorated-false created: {}", w.label()))
+        }
+        Err(e) => {
+            log!("[DECO-FALSE] BUILD_ERROR={}", e);
+            log!("[DECO-FALSE] ===== FAILED =====");
+            let _ = log_file.flush();
+            Err(format!("build failed: {}", e))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FORENSIC INPUT / HIT-TEST AUDIT
+// Diagnoses whether an invisible overlay HWND is intercepting input
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Command: Forensic input/hit-test audit.
+/// Inspects all relevant HWNDs to determine which one receives input
+/// at key screen coordinates (address bar, menu button, browser center).
+/// Writes ALL output to %TEMP%\eduos-input-debug.log for external inspection.
+#[tauri::command]
+fn forensic_input_diagnostic(app: tauri::AppHandle) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Write as IoWrite;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+    use windows::Win32::Foundation::{HWND as RawHWND, POINT, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindow, GetClassNameW, GetWindowRect, GetWindowLongW,
+        IsWindowVisible, WindowFromPoint,
+        GWL_STYLE, GWL_EXSTYLE, GW_CHILD,
+    };
+
+    // ── Open output file ──────────────────────────────────────────────────────────
+    let temp_dir = std::env::var("TEMP")
+        .or_else(|_| std::env::var("TMP"))
+        .unwrap_or_else(|_| "C:\\Temp".into());
+    let out_path: PathBuf = PathBuf::from(&temp_dir).join("eduos-input-debug.log");
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "unknown".into());
+
+    let mut file = File::create(&out_path)
+        .map_err(|e| format!("failed to create {}: {}", out_path.display(), e))?;
+
+    macro_rules! write_diag {
+        ($($tt:tt)*) => { {
+            let line = format!($($tt)*);
+            file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+            file.write_all(b"\n").map_err(|e| e.to_string())?;
+        } };
+    }
+
+    // ── Helpers (pure, no capture) ───────────────────────────────────────────────
+    fn class_of(h: RawHWND) -> String {
+        if h.0.is_null() { return "(null)".to_string(); }
+        let mut buf = [0u16; 128];
+        let len = unsafe { GetClassNameW(h, &mut buf) };
+        if len > 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { "?".to_string() }
+    }
+
+    fn rect_of(h: RawHWND) -> Option<RECT> {
+        if h.0.is_null() { return None; }
+        let mut r = RECT::default();
+        if unsafe { GetWindowRect(h, &mut r) }.is_ok() { Some(r) } else { None }
+    }
+
+    fn rect_str(r: &RECT) -> String {
+        format!("({},{} {},{})", r.left, r.top, r.right, r.bottom)
+    }
+
+    // ── Header ─────────────────────────────────────────────────────────────────
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ===== DIAGNOSTIC START =====");
+    write_diag!("[INPUT-DIAG] timestamp={}", timestamp);
+    write_diag!("[INPUT-DIAG] output_file={}", out_path.display());
+    write_diag!("");
+
+    // ── 1. Foreground window ────────────────────────────────────────────────────
+    write_diag!("[INPUT-DIAG] ── FOREGROUND ──");
+    let fgw = unsafe { GetForegroundWindow() };
+    let fgw_raw = fgw.0 as isize;
+    let fgw_cls = class_of(fgw);
+    let fgw_vis = if fgw.0.is_null() { false } else { unsafe { IsWindowVisible(fgw) }.as_bool() };
+    write_diag!("[INPUT-DIAG] HWND=0x{:X}", fgw_raw);
+    write_diag!("[INPUT-DIAG] class=\"{}\"", fgw_cls);
+    write_diag!("[INPUT-DIAG] visible={}", fgw_vis);
+    if !fgw.0.is_null() {
+        if let Some(r) = rect_of(fgw) {
+            write_diag!("[INPUT-DIAG] GetWindowRect={}", rect_str(&r));
+        }
+    }
+
+    // ── 2. Main window ──────────────────────────────────────────────────────────
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ── MAIN ──");
+    let main_window = app.get_webview_window("main");
+    let (main_hwnd, main_rect) = match &main_window {
+        Some(w) => {
+            let h = match w.hwnd() {
+                Ok(h) => RawHWND(h.0),
+                Err(_) => RawHWND(std::ptr::null_mut()),
+            };
+            let r = rect_of(h);
+            let cls = class_of(h);
+            let vis = if h.0.is_null() { false } else { unsafe { IsWindowVisible(h) }.as_bool() };
+            let style = if h.0.is_null() { 0 } else { unsafe { GetWindowLongW(h, GWL_STYLE) } };
+            let exstyle = if h.0.is_null() { 0 } else { unsafe { GetWindowLongW(h, GWL_EXSTYLE) } };
+            let vis_api = w.is_visible().unwrap_or(false);
+            write_diag!("[INPUT-DIAG] HWND=0x{:X}", h.0 as isize);
+            write_diag!("[INPUT-DIAG] class=\"{}\"", cls);
+            write_diag!("[INPUT-DIAG] IsWindowVisible={}", vis);
+            write_diag!("[INPUT-DIAG] is_visible(WebviewWindow API)={}", vis_api);
+            if let Some(rect) = &r {
+                write_diag!("[INPUT-DIAG] GetWindowRect={} size={}x{}", rect_str(rect), rect.right - rect.left, rect.bottom - rect.top);
+            } else {
+                write_diag!("[INPUT-DIAG] GetWindowRect=N/A");
+            }
+            write_diag!("[INPUT-DIAG] GWL_STYLE=0x{:X}", style);
+            write_diag!("[INPUT-DIAG] GWL_EXSTYLE=0x{:X}", exstyle);
+            (Some(h), r)
+        }
+        None => {
+            write_diag!("[INPUT-DIAG] HWND=(not found)");
+            write_diag!("[INPUT-DIAG] *** main window NOT FOUND ***");
+            (None, None)
+        }
+    };
+
+    // ── 3. Overlay window ────────────────────────────────────────────────────────
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ── OVERLAY ──");
+    let state = app.state::<OverlayWindowState>();
+    let overlay_hwnd = match state.window.lock().unwrap().as_ref() {
+        Some(w) => {
+            let h = match w.hwnd() {
+                Ok(h) => RawHWND(h.0),
+                Err(_) => RawHWND(std::ptr::null_mut()),
+            };
+            let h_raw = h.0 as isize;
+            let cls = class_of(h);
+            let label = w.label().to_string();
+            let is_vis_api = w.is_visible().unwrap_or(false);
+            let is_vis_win32 = if h.0.is_null() { false } else { unsafe { IsWindowVisible(h) }.as_bool() };
+            let style = if h.0.is_null() { 0 } else { unsafe { GetWindowLongW(h, GWL_STYLE) } };
+            let exstyle = if h.0.is_null() { 0 } else { unsafe { GetWindowLongW(h, GWL_EXSTYLE) } };
+            let r = rect_of(h);
+
+            write_diag!("[INPUT-DIAG] HWND=0x{:X}", h_raw);
+            write_diag!("[INPUT-DIAG] class=\"{}\"", cls);
+            write_diag!("[INPUT-DIAG] label=\"{}\"", label);
+            write_diag!("[INPUT-DIAG] IsWindowVisible={}", is_vis_win32);
+            write_diag!("[INPUT-DIAG] is_visible(WebviewWindow API)={}", is_vis_api);
+            if let Some(rect) = &r {
+                write_diag!("[INPUT-DIAG] GetWindowRect={} size={}x{}", rect_str(rect), rect.right - rect.left, rect.bottom - rect.top);
+            } else {
+                write_diag!("[INPUT-DIAG] GetWindowRect=N/A");
+            }
+            write_diag!("[INPUT-DIAG] GWL_STYLE=0x{:X}", style);
+            write_diag!("[INPUT-DIAG] GWL_EXSTYLE=0x{:X}", exstyle);
+
+            // Flag breakdown
+            let ws_visible     = (style as u32) & 0x10000000u32;
+            let ws_disabled    = (style as u32) & 0x08000000u32;
+            let ws_ex_trans    = (exstyle as u32) & 0x00000020u32;
+            let ws_ex_noact    = (exstyle as u32) & 0x08000000u32;
+            let ws_ex_layered  = (exstyle as u32) & 0x00080000u32;
+            write_diag!("[INPUT-DIAG] WS_VISIBLE        =0x{:X} ({})", ws_visible,   if ws_visible   != 0 { "SET" } else { "NOT SET" });
+            write_diag!("[INPUT-DIAG] WS_DISABLED       =0x{:X} ({})", ws_disabled,  if ws_disabled  != 0 { "SET" } else { "NOT SET" });
+            write_diag!("[INPUT-DIAG] WS_EX_TRANSPARENT =0x{:X} ({})", ws_ex_trans, if ws_ex_trans  != 0 { "SET" } else { "NOT SET" });
+            write_diag!("[INPUT-DIAG] WS_EX_NOACTIVATE  =0x{:X} ({})", ws_ex_noact, if ws_ex_noact  != 0 { "SET" } else { "NOT SET" });
+            write_diag!("[INPUT-DIAG] WS_EX_LAYERED     =0x{:X} ({})", ws_ex_layered, if ws_ex_layered != 0 { "SET" } else { "NOT SET" });
+
+            // First child
+            let child = unsafe { GetWindow(h, GW_CHILD) };
+            let child_raw = child.as_ref().map(|p| p.0 as isize).unwrap_or(0);
+            let child_cls = child.as_ref().map(|p| class_of(*p)).unwrap_or_else(|_| "none".to_string());
+            write_diag!("[INPUT-DIAG] first child HWND=0x{:X} class=\"{}\"", child_raw, child_cls);
+
+            h
+        }
+        None => {
+            write_diag!("[INPUT-DIAG] HWND=(not created)");
+            write_diag!("[INPUT-DIAG] *** OVERLAY NOT CREATED YET ***");
+            RawHWND(std::ptr::null_mut())
+        }
+    };
+
+    // ── 4. WindowFromPoint at key positions ─────────────────────────────────────
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ── WINDOWFROMPOINT AT KEY POSITIONS ──");
+
+    let mr = match main_rect {
+        Some(r) => r,
+        None => {
+            write_diag!("[INPUT-DIAG] *** Cannot test points: main rect unknown ***");
+            write_diag!("[INPUT-DIAG] ===== DIAGNOSTIC COMPLETE =====");
+            file.flush().map_err(|e| e.to_string())?;
+            return Ok(format!("written to {}", out_path.display()));
+        }
+    };
+
+    // NavBar height = 48 logical = 60 physical at scale 1.25
+    let nav_h: i32 = 60;
+    let search_x = (mr.left + mr.right) / 2;
+    let search_y = mr.top + nav_h / 2;
+    let menu_x = mr.left + 100;
+    let menu_y = mr.top + nav_h / 2;
+    let center_x = (mr.left + mr.right) / 2;
+    let center_y = mr.top + 300;
+
+    let points = [
+        ("SEARCH_BAR_CENTER", search_x, search_y),
+        ("MENU_BUTTON",       menu_x,   menu_y),
+        ("BROWSER_CENTER",    center_x, center_y),
+    ];
+
+    for (name, x, y) in points {
+        let pt = POINT { x, y };
+        let wf = unsafe { WindowFromPoint(pt) };
+        let wf_raw = wf.0 as isize;
+        let wf_cls = class_of(wf);
+        let wf_vis = if wf.0.is_null() { false } else { unsafe { IsWindowVisible(wf) }.as_bool() };
+        write_diag!("");
+        write_diag!("[INPUT-DIAG] POINT {}:", name);
+        write_diag!("[INPUT-DIAG]   screen=({},{})", x, y);
+        write_diag!("[INPUT-DIAG]   HWND=0x{:X}", wf_raw);
+        write_diag!("[INPUT-DIAG]   class=\"{}\"", wf_cls);
+        write_diag!("[INPUT-DIAG]   visible={}", wf_vis);
+
+        if !overlay_hwnd.0.is_null() && wf == overlay_hwnd {
+            write_diag!("[INPUT-DIAG]   *** OVERLAY RECEIVES THIS POINT ***");
+        } else if !overlay_hwnd.0.is_null() {
+            if let Some(or) = rect_of(overlay_hwnd) {
+                if x >= or.left && x <= or.right && y >= or.top && y <= or.bottom {
+                    write_diag!("[INPUT-DIAG]   *** POINT INSIDE OVERLAY RECT but DIFFERENT HWND returned ***");
+                }
+            }
+        }
+    }
+
+    // ── 5. Summary ──────────────────────────────────────────────────────────────
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ── SUMMARY ──");
+    write_diag!("[INPUT-DIAG] main window rect={}", rect_str(&mr));
+    if !overlay_hwnd.0.is_null() {
+        if let Some(or) = rect_of(overlay_hwnd) {
+            write_diag!("[INPUT-DIAG] overlay rect={} size={}x{}", rect_str(&or), or.right - or.left, or.bottom - or.top);
+            write_diag!("[INPUT-DIAG] overlay.y=[{},{}] vs main.y=[{},{}]", or.top, or.bottom, mr.top, mr.bottom);
+            if or.top <= mr.bottom && or.bottom >= mr.top {
+                write_diag!("[INPUT-DIAG] *** OVERLAY VERTICALLY OVERLAPS MAIN WINDOW ***");
+            }
+        }
+        if unsafe { IsWindowVisible(overlay_hwnd) }.as_bool() {
+            write_diag!("[INPUT-DIAG] *** OVERLAY IS VISIBLE (WS_VISIBLE flag set) ***");
+        }
+    }
+
+    write_diag!("");
+    write_diag!("[INPUT-DIAG] ===== DIAGNOSTIC COMPLETE =====");
+
+    file.flush().map_err(|e| e.to_string())?;
+    Ok(format!("written to {}", out_path.display()))
 }
 
 fn main() {
@@ -4681,6 +5040,7 @@ fn main() {
         .manage(Mutex::new(StartupProfiler::new()))
         .manage(BrowserOverlayState::default())
         .manage(OverlayWindowState::default())
+        .manage(DebugOverlayState::default())
         .invoke_handler(tauri::generate_handler![
             
             minimize_window,
@@ -4771,6 +5131,16 @@ fn main() {
             overlay_bookmark_toggle,
             #[cfg(target_os = "windows")]
             overlay_navigate,
+            #[cfg(target_os = "windows")]
+            forensic_input_diagnostic,
+            #[cfg(target_os = "windows")]
+            show_debug_overlay,
+            #[cfg(target_os = "windows")]
+            show_minimal_decorated_false,
+            #[cfg(target_os = "windows")]
+            show_minimal_window_experiment,
+            #[cfg(target_os = "windows")]
+            show_minimal_topmost,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

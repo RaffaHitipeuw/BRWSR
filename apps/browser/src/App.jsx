@@ -214,20 +214,6 @@ function App() {
           alert("Non-overlap experiment failed: " + err);
         }
       }
-      // Ctrl+Shift+O = show native overlay window
-      if (e.ctrlKey && e.shiftKey && e.key === "O") {
-        e.preventDefault();
-        try {
-          const { browserCommands } = await import("./components/browserCommands");
-          console.info("[OVERLAY] Showing native overlay...");
-          const msg = await browserCommands.showOverlayWindow();
-          console.info("[OVERLAY] Result:", msg);
-          alert("Overlay shown.\n" + msg);
-        } catch (err) {
-          console.error("[OVERLAY] Show failed:", err);
-          alert("Show overlay failed: " + err);
-        }
-      }
       // Ctrl+Shift+P = hide native overlay window
       if (e.ctrlKey && e.shiftKey && e.key === "P") {
         e.preventDefault();
@@ -238,6 +224,80 @@ function App() {
           console.info("[OVERLAY] Result:", msg);
         } catch (err) {
           console.error("[OVERLAY] Hide failed:", err);
+        }
+      }
+      // Ctrl+Shift+I = forensic input/hit-test diagnostic
+      if (e.ctrlKey && e.shiftKey && e.key === "I") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[INPUT-DIAG] Running forensic input diagnostic...");
+          const msg = await browserCommands.forensicInputDiagnostic();
+          console.info("[INPUT-DIAG] Result:", msg);
+          alert("Input diagnostic complete.\nCheck console [INPUT-DIAG] logs.\n" + msg);
+        } catch (err) {
+          console.error("[INPUT-DIAG] Failed:", err);
+          alert("Input diagnostic failed: " + err);
+        }
+      }
+      // Ctrl+Shift+O = show debug overlay (minimal experiment)
+      if (e.ctrlKey && e.shiftKey && e.key === "O") {
+        e.preventDefault();
+        console.info("[OVERLAY-FRONTEND] CTRL_SHIFT_O_TRIGGERED");
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[OVERLAY-FRONTEND] BEFORE_INVOKE");
+          const msg = await browserCommands.showDebugOverlay();
+          console.info("[OVERLAY-FRONTEND] AFTER_INVOKE");
+          console.info("[OVERLAY-FRONTEND] Result:", msg);
+          alert("Debug overlay triggered.\nLog: %TEMP%\\eduos-native-overlay.log\n" + msg);
+        } catch (err) {
+          console.error("[OVERLAY-FRONTEND] INVOKE_ERROR=", err);
+          alert("Debug overlay failed: " + err);
+        }
+      }
+      // Ctrl+Shift+D = decorations=false experiment (borderless window)
+      if (e.ctrlKey && e.shiftKey && e.key === "D") {
+        e.preventDefault();
+        console.info("[OVERLAY-FRONTEND] CTRL_SHIFT_D_TRIGGERED");
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[OVERLAY-FRONTEND] BEFORE_INVOKE");
+          const msg = await browserCommands.showMinimalDecoratedFalse();
+          console.info("[OVERLAY-FRONTEND] AFTER_INVOKE");
+          console.info("[OVERLAY-FRONTEND] Result:", msg);
+          alert("Decorated-false experiment.\nLog: %TEMP%\\eduos-native-overlay.log\n" + msg);
+        } catch (err) {
+          console.error("[OVERLAY-FRONTEND] INVOKE_ERROR=", err);
+          alert("Decorated-false experiment failed: " + err);
+        }
+      }
+      // Ctrl+Shift+M = minimal window threading experiment
+      if (e.ctrlKey && e.shiftKey && e.key === "M") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[MINWIN] Running minimal window experiment...");
+          const msg = await browserCommands.showMinimalWindowExperiment();
+          console.info("[MINWIN] Result:", msg);
+          alert("Minimal window experiment triggered.\nLog: %TEMP%\\eduos-native-overlay.log\n" + msg);
+        } catch (err) {
+          console.error("[MINWIN] Failed:", err);
+          alert("Minimal window experiment failed: " + err);
+        }
+      }
+      // Ctrl+Shift+T = minimal borderless always-on-top experiment
+      if (e.ctrlKey && e.shiftKey && e.key === "T") {
+        e.preventDefault();
+        try {
+          const { browserCommands } = await import("./components/browserCommands");
+          console.info("[TOPMOST] Running minimal borderless topmost experiment...");
+          const msg = await browserCommands.showMinimalTopmost();
+          console.info("[TOPMOST] Result:", msg);
+          alert("Borderless topmost experiment triggered.\nLog: %TEMP%\\eduos-native-overlay.log\n" + msg);
+        } catch (err) {
+          console.error("[TOPMOST] Failed:", err);
+          alert("Borderless topmost experiment failed: " + err);
         }
       }
     };

@@ -354,18 +354,22 @@ export const browser = {
     width: number,
     height: number,
   ): Promise<string> {
-    // ── PHASE 2: IPC WRAPPER TRACE ───────────────────────────────────────────
     const args = { overlayType, viewportX, viewportY, width, height };
+    console.info(`[HAMBURGER-TRACE] BEFORE_INVOKE`, JSON.stringify(args));
     console.info(`[OVERLAY:IPC] INVOKE show_native_overlay with args:`, JSON.stringify(args));
     try {
-      const result = (await invoke("show_native_overlay", args)) as string;
+      const result = (await invoke("show_native_overlay", args)) as string | null;
+      // Tauri 2.x: Result::Err serializes as null (not a rejected promise)
+      if (result === null) {
+        console.error(`[OVERLAY:IPC] RESULT_IS_NULL (backend returned Err)`);
+        throw new Error(`show_native_overlay returned null — check backend logs for error`);
+      }
+      console.info(`[HAMBURGER-TRACE] AFTER_INVOKE`, result);
       console.info(`[OVERLAY:IPC] RESOLVED:`, result);
       return result;
     } catch (err) {
-      const errObj = err as { message?: string; name?: string; toString?: () => string } | null;
-      console.error(`[OVERLAY:IPC] REJECTED:`, errObj?.message || String(err));
-      console.error(`[OVERLAY:IPC] Error name:`, errObj?.name);
-      console.error(`[OVERLAY:IPC] Full error:`, err);
+      console.error(`[HAMBURGER-TRACE] INVOKE_ERROR`, err);
+      console.error(`[OVERLAY:IPC] REJECTED:`, err);
       throw err;
     }
   },
@@ -393,6 +397,71 @@ export const browser = {
       return result;
     } catch (err) {
       console.error(`[OVERLAY:IPC] is_native_overlay_visible REJECTED:`, err);
+      throw err;
+    }
+  },
+
+  /** Forensic input audit: diagnose which HWND receives input at key positions. */
+  async forensicInputDiagnostic(): Promise<string> {
+    console.info(`[OVERLAY:IPC] INVOKE forensic_input_diagnostic`);
+    try {
+      const result = (await invoke("forensic_input_diagnostic")) as string;
+      console.info(`[OVERLAY:IPC] forensic_input_diagnostic RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[OVERLAY:IPC] forensic_input_diagnostic REJECTED:`, err);
+      throw err;
+    }
+  },
+
+  /** Show the debug overlay window (Ctrl+Shift+O proof-of-concept). */
+  async showDebugOverlay(): Promise<string> {
+    console.info(`[DEBUG-OVERLAY] INVOKE show_debug_overlay`);
+    try {
+      const result = (await invoke("show_debug_overlay")) as string;
+      console.info(`[DEBUG-OVERLAY] show_debug_overlay RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[DEBUG-OVERLAY] show_debug_overlay REJECTED:`, err);
+      throw err;
+    }
+  },
+
+  /** Experiment: decorations=false (Ctrl+Shift+D). */
+  async showMinimalDecoratedFalse(): Promise<string> {
+    console.info(`[DECO-FALSE] INVOKE show_minimal_decorated_false`);
+    try {
+      const result = (await invoke("show_minimal_decorated_false")) as string;
+      console.info(`[DECO-FALSE] show_minimal_decorated_false RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[DECO-FALSE] show_minimal_decorated_false REJECTED:`, err);
+      throw err;
+    }
+  },
+
+  /** Minimal window threading experiment (Ctrl+Shift+M). */
+  async showMinimalWindowExperiment(): Promise<string> {
+    console.info(`[MINWIN] INVOKE show_minimal_window_experiment`);
+    try {
+      const result = (await invoke("show_minimal_window_experiment")) as string;
+      console.info(`[MINWIN] show_minimal_window_experiment RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[MINWIN] show_minimal_window_experiment REJECTED:`, err);
+      throw err;
+    }
+  },
+
+  /** Minimal borderless + always-on-top experiment (Ctrl+Shift+T). */
+  async showMinimalTopmost(): Promise<string> {
+    console.info(`[TOPMOST] INVOKE show_minimal_topmost`);
+    try {
+      const result = (await invoke("show_minimal_topmost")) as string;
+      console.info(`[TOPMOST] show_minimal_topmost RESOLVED:`, result);
+      return result;
+    } catch (err) {
+      console.error(`[TOPMOST] show_minimal_topmost REJECTED:`, err);
       throw err;
     }
   },
