@@ -1472,7 +1472,14 @@ impl Default for CachedSystem {
     }
 }
 
-
+// ═══════════════════════════════════════════════════════════════════════════════
+// CBT Phase 4B: Computer-Based Testing integration
+// ═══════════════════════════════════════════════════════════════════════════════
+#[tauri::command]
+fn handle_cbt_signal(event: String, window: tauri::Window) -> Result<(), String> {
+    println!("[CBT][PHASE_4B][HOST] SIGNAL_RECEIVED event={} source_window={}", event, window.label());
+    Ok(())
+}
 
 #[tauri::command]
 fn minimize_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -4159,7 +4166,7 @@ fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
 
     const PRODUCTION_WINDOW_LABEL: &str = "native-overlay";
 
-    log::info!("[NATIVE-OVERLAY] CREATE_NEW_WINDOW label={}", PRODUCTION_WINDOW_LABEL);
+    log::info!("[OVERLAY_TRACE][6] WINDOW_BUILD_ATTEMPT label={}", PRODUCTION_WINDOW_LABEL);
 
     // Production window configuration:
     // - decorations(false): no title bar
@@ -4176,23 +4183,15 @@ fn create_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow,
         .visible(false)
         .skip_taskbar(true);
 
-    log::info!("[NATIVE-OVERLAY] Builder created, calling build()...");
+    log::info!("[OVERLAY_TRACE] Builder created, calling build()...");
 
     let overlay = builder.build()
         .map_err(|e| {
-            log::error!("[NATIVE-OVERLAY] CREATE_FAILED: {}", e);
-            format!("[NATIVE-OVERLAY] Failed to create overlay window: {}", e)
+            log::error!("[OVERLAY_TRACE][6] WINDOW_BUILD_FAILED: {}", e);
+            format!("[OVERLAY_TRACE] Failed to create overlay window: {}", e)
         })?;
 
-    log::info!("[NATIVE-OVERLAY] CREATE_SUCCESS label={}", overlay.label());
-    let is_visible = overlay.is_visible().unwrap_or(false);
-    log::info!("[NATIVE-OVERLAY] initial_visibility={} (expected: false)", is_visible);
-
-    if let Ok(hwnd) = overlay.hwnd() {
-        log::info!("[NATIVE-OVERLAY] hwnd=0x{:X}", hwnd.0 as isize);
-    }
-
-    log::info!("[NATIVE-OVERLAY] CREATE_COMPLETE");
+    log::info!("[OVERLAY_TRACE][7] WINDOW_BUILD_SUCCESS label={}", overlay.label());
 
     Ok(overlay)
 }
@@ -4221,13 +4220,9 @@ async fn show_native_overlay(
         GetWindowRect, SetWindowPos, IsWindowVisible,
     };
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // [NATIVE-OVERLAY] Deterministic production logging
-    // ═══════════════════════════════════════════════════════════════════════════════
     log::info!("");
-    log::info!("[NATIVE-OVERLAY] ════════════════════════════════════════════");
-    log::info!("[NATIVE-OVERLAY] SHOW_REQUEST overlay_type={}", overlay_type);
-    log::info!("[NATIVE-OVERLAY] viewport=({},{}) size=({}x{})", viewport_x, viewport_y, width, height);
+    log::info!("[OVERLAY_TRACE][5] RUST_COMMAND_ENTERED overlay_type={} viewport=({},{}) size=({}x{})",
+        overlay_type, viewport_x, viewport_y, width, height);
 
     let state = app.state::<OverlayWindowState>();
 
@@ -4321,6 +4316,7 @@ async fn show_native_overlay(
 
     log::info!("[NATIVE-OVERLAY] SHOW_COMPLETE type={} at=({},{}) size=({}x{}) visible={}",
         overlay_type, screen_x, screen_y, w, h, is_visible);
+    log::info!("[OVERLAY_TRACE][8] WINDOW_VISIBLE visible={}", is_visible);
     log::info!("[NATIVE-OVERLAY] ════════════════════════════════════════════");
     log::info!("");
 
@@ -5042,7 +5038,8 @@ fn main() {
         .manage(OverlayWindowState::default())
         .manage(DebugOverlayState::default())
         .invoke_handler(tauri::generate_handler![
-            
+            handle_cbt_signal,
+
             minimize_window,
             toggle_maximize,
             close_window,

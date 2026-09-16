@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-handle-cbt-signal"
+description = "Enables the handle_cbt_signal command without any pre-configured scope."
+commands.allow = ["handle_cbt_signal"]

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-navigate-browser"
+description = "Enables the navigate_browser command without any pre-configured scope."
+commands.allow = ["navigate_browser"]

@@ -2,6 +2,7 @@ import { clsx } from "clsx";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTabStore } from "../stores/tabs";
 import { useBookmarksStore } from "../stores/bookmarks";
+import { parseUrl } from "../utils/url";
 
 // ─── Coordinate System ───────────────────────────────────────────────────────
 //
@@ -22,31 +23,6 @@ import { useBookmarksStore } from "../stores/bookmarks";
 // Scale factor — determined empirically for this window config
 // Can be made dynamic by querying Tauri window.scaleFactor() if needed
 const SCALE = 1.25;
-const UI_HEIGHT_LOGICAL = 88;
-const UI_HEIGHT_PHYSICAL = Math.round(UI_HEIGHT_LOGICAL * SCALE);
-
-// ============================================================
-// DEBUG MODE — set to false for production
-// ============================================================
-const DEBUG_OVERLAY_MODE = false;
-
-function NavButton({ onClick, disabled, title, children }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={clsx(
-        "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
-        disabled
-          ? "text-gray-300 cursor-not-allowed"
-          : "text-gray-300 hover:bg-gray-100 active:bg-gray-200"
-      )}
-    >
-      {children}
-    </button>
-  );
-}
 
 // ─── Native Overlay Integration ─────────────────────────────────────────────
 // The bookmark menu is shown via a dedicated native overlay window,
@@ -54,55 +30,43 @@ function NavButton({ onClick, disabled, title, children }) {
 // A transparent click-capture div in the main React app handles
 // "click outside to close" since the overlay is a separate native window.
 
-	/** Show the native overlay window with given viewport-relative rect (logical coords). */
+/** Show the native overlay window with given viewport-relative rect (logical coords). */
 async function showNativeOverlay(rect) {
-	  console.log('[HAMBURGER-TRACE] IPC_WRAPPER_ENTER', { rect });
-	  console.log('[OVERLAY:IPC] 9_ENTERED rect=', JSON.stringify(rect));
-	  console.log('[OVERLAY:IPC] dpr=', window.devicePixelRatio);
+    const viewportXPhys = Math.round(rect.left * SCALE);
+    const viewportYPhys = Math.round(rect.top * SCALE);
+    const widthPhys = Math.round(rect.width * SCALE);
+    const heightPhys = Math.round(rect.height * SCALE);
 
-	  const viewportXPhys = Math.round(rect.left * SCALE);
-	  const viewportYPhys = Math.round(rect.top * SCALE);
-	  const widthPhys = Math.round(rect.width * SCALE);
-	  const heightPhys = Math.round(rect.height * SCALE);
+    const args = { overlayType: 'bookmark_menu', viewportX: viewportXPhys, viewportY: viewportYPhys, width: widthPhys, height: heightPhys };
+    console.log("[OVERLAY_TRACE][4] TAURI_INVOKE_ATTEMPT", { command: 'show_native_overlay', args });
 
-	  const args = DEBUG_OVERLAY_MODE
-	    ? { overlayType: 'debug', viewportX: 100, viewportY: 100, width: 500, height: 500 }
-	    : { overlayType: 'bookmark_menu', viewportX: viewportXPhys, viewportY: viewportYPhys, width: widthPhys, height: heightPhys };
-
-	  console.log('[OVERLAY:IPC] DEBUG_MODE=', DEBUG_OVERLAY_MODE, 'args=', JSON.stringify(args));
-	  console.log('[OVERLAY:IPC] 10_BEFORE_invoke');
-
-	  try {
-	    const { browserCommands } = await import('./browserCommands');
-	    const result = await browserCommands.showNativeOverlay(
-	      args.overlayType, args.viewportX, args.viewportY, args.width, args.height,
-	    );
-	    console.log('[OVERLAY:IPC] 11_SUCCESS:', result);
-	    const state = useBookmarksStore.getState();
-	    const tabStore = useTabStore.getState();
-	    const activeTab = tabStore.tabs.find((t) => t.id === tabStore.activeTabId);
-	    const url = activeTab?.url || '';
-	    const isBookmarked = state.isBookmarked(url);
-	    localStorage.setItem('eduos-overlay-bookmark-state', JSON.stringify({ url, isBookmarked }));
-	    return result;
-	  } catch (err) {
-	    console.error('[OVERLAY:IPC] 10_ERROR:', err?.message || String(err));
-	    console.error('[OVERLAY:IPC] 10_ERROR_full:', err);
-	    throw err;
-	  }
-	}
+    try {
+        const { browserCommands } = await import('./browserCommands');
+        const result = await browserCommands.showNativeOverlay(
+            args.overlayType, args.viewportX, args.viewportY, args.width, args.height,
+        );
+        console.log("[OVERLAY_TRACE] IPC_SUCCESS", result);
+        const state = useBookmarksStore.getState();
+        const tabStore = useTabStore.getState();
+        const activeTab = tabStore.tabs.find((t) => t.id === tabStore.activeTabId);
+        const url = activeTab?.url || '';
+        const isBookmarked = state.isBookmarked(url);
+        localStorage.setItem('eduos-overlay-bookmark-state', JSON.stringify({ url, isBookmarked }));
+        return result;
+    } catch (err) {
+        console.error("[OVERLAY_TRACE][4] TAURI_INVOKE_ERROR", err?.message || String(err));
+        throw err;
+    }
+}
 
 /** Hide the native overlay window. */
 async function hideNativeOverlay() {
-  console.info("[OVERLAY:UI] hideNativeOverlay() called");
-  try {
-    const { browserCommands } = await import("./browserCommands");
-    const result = await browserCommands.hideNativeOverlay();
-    console.info("[OVERLAY:UI] hideNativeOverlay SUCCESS:", result);
-  } catch (error) {
-    console.error("[OVERLAY:UI] hideNativeOverlay FAILED:", error);
-    throw error;
-  }
+    try {
+        const { browserCommands } = await import("./browserCommands");
+        await browserCommands.hideNativeOverlay();
+    } catch (error) {
+        console.error("[OVERLAY_TRACE] hideNativeOverlay FAILED:", error);
+    }
 }
 
 export function NavigationBar({
@@ -135,7 +99,6 @@ export function NavigationBar({
   useEffect(() => {
     const handleEsc = (e) => {
       if (e.key === "Escape" && showMenu) {
-        console.info("[OVERLAY:UI] Escape pressed, closing overlay");
         setShowMenu(false);
         hideNativeOverlay();
       }
@@ -167,18 +130,13 @@ export function NavigationBar({
 
   const handleUrlSubmit = (e) => {
     e.preventDefault();
-    if (urlInput.trim() && activeTabId) {
-      let url = urlInput.trim();
-
-      if (url.includes(".") && !url.includes(" ")) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-          url = "https://" + url;
-        }
-      } else {
-        const encodedQuery = encodeURIComponent(url);
-        url = `https://www.google.com/search?q=${encodedQuery}`;
-      }
-
+    const rawInput = urlInput.trim();
+    if (rawInput && activeTabId) {
+      const { url, type } = parseUrl(rawInput);
+      console.log("[NAV][INPUT] raw=" + rawInput);
+      console.log("[NAV][CLASSIFY] type=" + type);
+      console.log("[NAV][TARGET] " + url);
+      console.log("[NAV][DISPATCH] navigating=" + url);
       onNavigate(activeTabId, url);
     }
   };
@@ -191,56 +149,25 @@ export function NavigationBar({
 
   // Menu button click → show native overlay
   const handleMenuToggle = useCallback((e) => {
-    console.log("[HAMBURGER-TRACE] BUTTON_ONCLICK");
-    console.log("[OVERLAY-FRONTEND] 1_HANDLER_ENTERED");
-
-    console.log("[HAMBURGER-TRACE] HANDLE_ENTER", { showMenu });
-
-    console.log("[OVERLAY-FRONTEND] 2_BEFORE_STOP_PROPAGATION");
-    if (e) e.stopPropagation();
-    console.log("[OVERLAY-FRONTEND] 3_AFTER_STOP_PROPAGATION");
-
-    console.log("[OVERLAY-FRONTEND] showMenu=", showMenu, "activeTabId=", activeTabId);
+    console.log("[OVERLAY_TRACE][1] HAMBURGER_CLICKED");
+    console.log("[OVERLAY_TRACE][2] HANDLE_MENU_TOGGLE_ENTERED", { showMenu, activeTabId });
 
     if (showMenu) {
-      console.log("[OVERLAY-FRONTEND] 4a_CLOSING showMenu=true");
-      console.log("[OVERLAY-FRONTEND] 5a_BEFORE_setShowMenu(false)");
+      console.log("[OVERLAY_TRACE] CLOSING flow");
       setShowMenu(false);
-      console.log("[OVERLAY-FRONTEND] 6a_AFTER_setShowMenu(false)");
-      console.log("[OVERLAY-FRONTEND] 7a_BEFORE_hideNativeOverlay");
       hideNativeOverlay();
-      console.log("[OVERLAY-FRONTEND] 8a_AFTER_hideNativeOverlay");
     } else {
-      console.log("[OVERLAY-FRONTEND] 4b_OPENING showMenu=false");
-      console.log("[OVERLAY-FRONTEND] 5b_BEFORE_setShowMenu(true)");
+      console.log("[OVERLAY_TRACE] OPENING flow");
       setShowMenu(true);
-      console.log("[OVERLAY-FRONTEND] 6b_AFTER_setShowMenu(true)");
-      console.log("[OVERLAY-FRONTEND] 7b_BEFORE_showNativeOverlay");
 
-      // Log which element is at the hamburger center (viewport coords)
-      const nav = document.querySelector('[title="Menu"]');
-      if (nav) {
-        const r = nav.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        const hit = document.elementFromPoint(cx, cy);
-        console.log("[OVERLAY-FRONTEND] elementFromPoint(", cx, ",", cy, ") =", hit?.tagName, hit?.className, hit?.title || hit?.getAttribute?.('title'));
-      }
+      const rect = { left: 8, top: 60, width: 288, height: 350 };
+      console.log("[OVERLAY_TRACE][3] SHOW_NATIVE_OVERLAY_CALLED", { rect });
 
-      // === HAMBURGER-TRACE: Log params before IPC call ===
-      console.log("[HAMBURGER-TRACE] BEFORE_IPC", { overlayType: 'bookmark_menu', rect: { left: 8, top: 60, width: 288, height: 350 } });
-
-      showNativeOverlay({
-        left: 8,
-        top: 60,
-        width: 288,
-        height: 350,
-      }).then((result) => {
-        console.log("[OVERLAY-FRONTEND] 8b_NATIVE_IPC_SUCCESS", result);
+      showNativeOverlay(rect).then((result) => {
+        console.log("[OVERLAY_TRACE] FRONTEND_SUCCESS", result);
       }).catch((err) => {
-        console.error("[OVERLAY-FRONTEND] 8b_NATIVE_IPC_ERROR", err);
+        console.error("[OVERLAY_TRACE] FRONTEND_ERROR", err);
       });
-      console.log("[OVERLAY-FRONTEND] 7b_AFTER_showNativeOverlay_call");
     }
   }, [showMenu, activeTabId]);
 
@@ -253,7 +180,6 @@ export function NavigationBar({
           className="fixed inset-0"
           style={{ background: "transparent", zIndex: 99998, pointerEvents: "auto" }}
           onClick={() => {
-            console.info("[OVERLAY:UI] Click-outside detected, closing overlay");
             setShowMenu(false);
             hideNativeOverlay();
           }}
@@ -284,10 +210,7 @@ export function NavigationBar({
 
         {/* Menu Button */}
         <button
-          onClick={() => {
-            console.log("[HAMBURGER-TRACE] BUTTON_ONCLICK");
-            handleMenuToggle();
-          }}
+          onClick={handleMenuToggle}
           className={clsx(
             "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
             showMenu ? "bg-gray-200 text-gray-800" : "text-gray-600 hover:bg-gray-100"
@@ -336,5 +259,23 @@ export function NavigationBar({
         </div>
       </div>
     </>
+  );
+}
+
+function NavButton({ onClick, disabled, title, children }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={clsx(
+        "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
+        disabled
+          ? "text-gray-300 cursor-not-allowed"
+          : "text-gray-300 hover:bg-gray-100 active:bg-gray-200"
+      )}
+    >
+      {children}
+    </button>
   );
 }

@@ -355,21 +355,18 @@ export const browser = {
     height: number,
   ): Promise<string> {
     const args = { overlayType, viewportX, viewportY, width, height };
-    console.info(`[HAMBURGER-TRACE] BEFORE_INVOKE`, JSON.stringify(args));
-    console.info(`[OVERLAY:IPC] INVOKE show_native_overlay with args:`, JSON.stringify(args));
+    console.log("[OVERLAY_TRACE] browserCommands.showNativeOverlay ENTER", args);
     try {
       const result = (await invoke("show_native_overlay", args)) as string | null;
       // Tauri 2.x: Result::Err serializes as null (not a rejected promise)
       if (result === null) {
-        console.error(`[OVERLAY:IPC] RESULT_IS_NULL (backend returned Err)`);
+        console.error("[OVERLAY_TRACE] RESULT_IS_NULL (backend returned Err)");
         throw new Error(`show_native_overlay returned null — check backend logs for error`);
       }
-      console.info(`[HAMBURGER-TRACE] AFTER_INVOKE`, result);
-      console.info(`[OVERLAY:IPC] RESOLVED:`, result);
+      console.log("[OVERLAY_TRACE] browserCommands.showNativeOverlay SUCCESS", result);
       return result;
     } catch (err) {
-      console.error(`[HAMBURGER-TRACE] INVOKE_ERROR`, err);
-      console.error(`[OVERLAY:IPC] REJECTED:`, err);
+      console.error("[OVERLAY_TRACE] browserCommands.showNativeOverlay ERROR", err);
       throw err;
     }
   },

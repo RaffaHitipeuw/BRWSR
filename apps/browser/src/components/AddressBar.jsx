@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useTabStore } from "../stores/tabs";
+import { parseUrl } from "../utils/url";
 
 export function AddressBar() {
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -19,16 +20,12 @@ export function AddressBar() {
 
   const handleSubmit = (e) => {
     if (e.key === "Enter" && activeTabId) {
-      let url = inputValue.trim();
-
-      if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        if (url.includes(".") && !url.includes(" ")) {
-          url = "https://" + url;
-        } else {
-          url = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-        }
-      }
-
+      const rawInput = inputValue.trim();
+      const { url, type } = parseUrl(rawInput);
+      console.log("[NAV][INPUT] raw=" + rawInput);
+      console.log("[NAV][CLASSIFY] type=" + type);
+      console.log("[NAV][TARGET] " + url);
+      console.log("[NAV][DISPATCH] navigating=" + url);
       navigate(activeTabId, url);
       inputRef.current?.blur();
     }
