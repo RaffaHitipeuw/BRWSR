@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-inject-url-tracker"
+description = "Enables the inject_url_tracker command without any pre-configured scope."
+commands.allow = ["inject_url_tracker"]

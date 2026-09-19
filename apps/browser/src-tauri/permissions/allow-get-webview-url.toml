@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-get-webview-url"
+description = "Enables the get_webview_url command without any pre-configured scope."
+commands.allow = ["get_webview_url"]

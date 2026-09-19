@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-raise-browser-zorder"
+description = "Enables the raise_browser_zorder command without any pre-configured scope."
+commands.allow = ["raise_browser_zorder"]

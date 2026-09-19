@@ -47,7 +47,10 @@ function App() {
       // Only navigate if URL is different from last navigation
       if (activeTab.url !== lastNavigatedUrl.current) {
         lastNavigatedUrl.current = activeTab.url;
-        browser.navigate(activeTab.url, activeTabId, "tab_switch");
+        browser.navigate(activeTab.url, activeTabId, "tab_switch").then(() => {
+          // Inject URL tracker after tab switch navigation
+          browser.injectUrlTracker().catch(() => {});
+        });
       }
     }
   }, [activeTabId, activeTab]);
@@ -64,14 +67,40 @@ function App() {
           const url = event.payload;
           console.info("[App] overlay-navigate:", url);
           if (activeTabId) {
-            browser.navigate(url, activeTabId, "overlay");
+            browser.navigate(url, activeTabId, "overlay").then(() => {
+              // Inject URL tracker after overlay navigation
+              browser.injectUrlTracker().catch(() => {});
+            });
           }
         });
         unlistenBookmarkToggle = await listen("overlay-bookmark-toggle", () => {
           console.info("[App] overlay-bookmark-toggle received");
-          // Trigger a re-render by toggling the active tab state
-          // The NavigationBar reads bookmark state directly from the store
-          // so we just need to notify it changed
+        });
+        // Listen for URL changes from injected WebView script
+        await listen("webview-url-changed", (event) => {
+          const url = event.payload;
+          if (url && typeof url === 'string' && url.startsWith('http')) {
+            const state = useTabStore.getState();
+            const { activeTabId, tabs } = state;
+            if (activeTabId) {
+              const activeTab = tabs.find(t => t.id === activeTabId);
+              if (activeTab && activeTab.url !== url) {
+                console.info("[URL-SYNC] WebView URL changed:", url);
+                state.updateTab(activeTabId, {
+                  url,
+                  title: activeTab.title,
+                  favicon: (() => {
+                    try {
+                      const hostname = new URL(url).hostname;
+                      return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+                    } catch {
+                      return activeTab.favicon;
+                    }
+                  })(),
+                });
+              }
+            }
+          }
         });
       } catch (err) {
         console.warn("[App] Failed to setup overlay listeners:", err);
@@ -133,21 +162,37 @@ function App() {
   const handleNavigate = useCallback(
     (tabId, url) => {
       navigate(tabId, url);
-      browser.navigate(url, tabId, "typed_url");
+      browser.navigate(url, tabId, "typed_url").then(() => {
+        browser.injectUrlTracker().catch(() => {});
+      });
     },
     [navigate],
   );
 
   const handleReload = useCallback(() => {
-    browser.reload();
+    browser.reload().then(() => {
+      browser.injectUrlTracker().catch(() => {});
+    });
   }, []);
 
   const handleBack = useCallback(() => {
-    browser.back();
+    const { activeTabId } = useTabStore.getState();
+    if (activeTabId) {
+      useTabStore.getState().goBack(activeTabId);
+    }
+    browser.back().then(() => {
+      browser.injectUrlTracker().catch(() => {});
+    });
   }, []);
 
   const handleForward = useCallback(() => {
-    browser.forward();
+    const { activeTabId } = useTabStore.getState();
+    if (activeTabId) {
+      useTabStore.getState().goForward(activeTabId);
+    }
+    browser.forward().then(() => {
+      browser.injectUrlTracker().catch(() => {});
+    });
   }, []);
 
   useKeyboardShortcuts({

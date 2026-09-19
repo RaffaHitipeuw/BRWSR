@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-forward-browser"
+description = "Enables the forward_browser command without any pre-configured scope."
+commands.allow = ["forward_browser"]

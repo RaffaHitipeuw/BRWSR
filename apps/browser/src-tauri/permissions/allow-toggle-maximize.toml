@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-toggle-maximize"
+description = "Enables the toggle_maximize command without any pre-configured scope."
+commands.allow = ["toggle_maximize"]

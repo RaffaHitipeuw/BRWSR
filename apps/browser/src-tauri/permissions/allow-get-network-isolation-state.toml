@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-get-network-isolation-state"
+description = "Enables the get_network_isolation_state command without any pre-configured scope."
+commands.allow = ["get_network_isolation_state"]

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-close-window"
+description = "Enables the close_window command without any pre-configured scope."
+commands.allow = ["close_window"]

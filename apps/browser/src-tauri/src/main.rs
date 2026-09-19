@@ -1444,19 +1444,16 @@ impl CachedSystem {
         *self.last_memory_refresh.lock().unwrap() = Instant::now();
     }
 
-    /// Get memory for a specific process by PID
     fn get_process_memory(&self, pid: Pid) -> Option<(u64, u64)> {
         let sys = self.sys.lock().unwrap();
         sys.process(pid).map(|p| (p.memory(), p.virtual_memory()))
     }
 
-    /// Get system memory totals
     fn get_system_memory(&self) -> (u64, u64) {
         let sys = self.sys.lock().unwrap();
         (sys.total_memory(), sys.available_memory())
     }
 
-    /// Get memory for multiple PIDs
     fn get_processes_memory(&self, pids: &[u32]) -> f64 {
         let sys = self.sys.lock().unwrap();
         pids.iter()
@@ -1475,34 +1472,414 @@ impl Default for CachedSystem {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CBT Phase 4B: Computer-Based Testing integration
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// CBT phase state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CbtPhase {
+    Idle,
+    Active,
+}
+
+impl Default for CbtPhase {
+    fn default() -> Self {
+        CbtPhase::Idle
+    }
+}
+
+/// Shared state for CBT Phase 4B.
+struct CbtState {
+    phase: Mutex<CbtPhase>,
+    /// Indicates if network monitoring thread is active.
+    monitoring: Mutex<bool>,
+}
+
+impl Default for CbtState {
+    fn default() -> Self {
+        Self {
+            phase: Mutex::new(CbtPhase::Idle),
+            monitoring: Mutex::new(false),
+        }
+    }
+}
+
+/// Network isolation state for exam security.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NetworkIsolation {
+    Off,
+    On,
+}
+
+/// Result type for isolation backend operations.
+#[derive(Clone, Debug)]
+pub struct IsolationResult {
+    pub success: bool,
+    pub state_changed: bool,
+    pub message: String,
+}
+
+impl IsolationResult {
+    pub fn ok() -> Self {
+        Self {
+            success: true,
+            state_changed: false,
+            message: String::new(),
+        }
+    }
+
+    pub fn enabled() -> Self {
+        Self {
+            success: true,
+            state_changed: true,
+            message: "Isolation enabled".to_string(),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            success: true,
+            state_changed: true,
+            message: "Isolation disabled".to_string(),
+        }
+    }
+
+    pub fn already_enabled() -> Self {
+        Self {
+            success: true,
+            state_changed: false,
+            message: "Already enabled".to_string(),
+        }
+    }
+
+    pub fn already_disabled() -> Self {
+        Self {
+            success: true,
+            state_changed: false,
+            message: "Already disabled".to_string(),
+        }
+    }
+
+    pub fn error(msg: &str) -> Self {
+        Self {
+            success: false,
+            state_changed: false,
+            message: msg.to_string(),
+        }
+    }
+}
+
+/// Shared state for NetworkIsolation.
+/// Thread-safe via Mutex, managed by Tauri.
+struct NetworkIsolationState {
+    isolation: Mutex<NetworkIsolation>,
+}
+
+impl Default for NetworkIsolationState {
+    fn default() -> Self {
+        Self {
+            isolation: Mutex::new(NetworkIsolation::Off),
+        }
+    }
+}
+
+/// IsolationBackend trait - abstraction for network isolation implementations.
+///
+/// This trait defines the interface for isolation backends.
+/// Different implementations can be swapped (e.g., state-based, future OS-level, etc.)
+/// without changing the calling code.
+trait IsolationBackend: Send + Sync {
+    /// Enable isolation.
+    /// Returns IsolationResult with success status and whether state actually changed.
+    fn enable(&self, app: &tauri::AppHandle) -> IsolationResult;
+
+    /// Disable isolation.
+    /// Returns IsolationResult with success status and whether state actually changed.
+    fn disable(&self, app: &tauri::AppHandle) -> IsolationResult;
+
+    /// Check if isolation is currently enabled.
+    fn is_enabled(&self, app: &tauri::AppHandle) -> bool;
+
+    /// Get current isolation state.
+    fn get_state(&self, app: &tauri::AppHandle) -> NetworkIsolation;
+}
+
+/// State-based isolation backend.
+/// Current implementation uses application-level state tracking.
+/// Does NOT modify OS network stack.
+struct StateBackend;
+
+impl StateBackend {
+    fn new() -> Self {
+        Self
+    }
+}
+
+impl IsolationBackend for StateBackend {
+    fn enable(&self, app: &tauri::AppHandle) -> IsolationResult {
+        let iso_state = app.state::<NetworkIsolationState>();
+        let mut isolation = iso_state.isolation.lock().unwrap();
+
+        if *isolation == NetworkIsolation::On {
+            return IsolationResult::already_enabled();
+        }
+
+        *isolation = NetworkIsolation::On;
+        println!("[CBT][PHASE_4B][ISOLATION] ENFORCEMENT_ENABLED");
+        IsolationResult::enabled()
+    }
+
+    fn disable(&self, app: &tauri::AppHandle) -> IsolationResult {
+        let iso_state = app.state::<NetworkIsolationState>();
+        let mut isolation = iso_state.isolation.lock().unwrap();
+
+        if *isolation == NetworkIsolation::Off {
+            return IsolationResult::already_disabled();
+        }
+
+        *isolation = NetworkIsolation::Off;
+        println!("[CBT][PHASE_4B][ISOLATION] ENFORCEMENT_DISABLED");
+        IsolationResult::disabled()
+    }
+
+    fn is_enabled(&self, app: &tauri::AppHandle) -> bool {
+        let iso_state = app.state::<NetworkIsolationState>();
+        let isolation = iso_state.isolation.lock().unwrap();
+        *isolation == NetworkIsolation::On
+    }
+
+    fn get_state(&self, app: &tauri::AppHandle) -> NetworkIsolation {
+        let iso_state = app.state::<NetworkIsolationState>();
+        let isolation = iso_state.isolation.lock().unwrap();
+        isolation.clone()
+    }
+}
+
+/// Network Isolation Controller.
+/// Manages exam-mode network restrictions at the application level.
+/// Uses a pluggable backend for the actual isolation implementation.
+/// This is idempotent and application-scoped (does not modify OS network stack).
+/// Thread-safe, stateless - all state is in the managed NetworkIsolationState.
+struct NetworkIsolationController;
+
+impl NetworkIsolationController {
+    /// Enable exam network isolation via the configured backend.
+    fn enable(app: &tauri::AppHandle) -> IsolationResult {
+        let backend = StateBackend::new();
+        let result = backend.enable(app);
+        if !result.success {
+            eprintln!("[CBT][PHASE_4B][ISOLATION] ERROR enabling: {}", result.message);
+        }
+        result
+    }
+
+    /// Disable exam network isolation via the configured backend.
+    fn disable(app: &tauri::AppHandle) -> IsolationResult {
+        let backend = StateBackend::new();
+        let result = backend.disable(app);
+        if !result.success {
+            eprintln!("[CBT][PHASE_4B][ISOLATION] ERROR disabling: {}", result.message);
+        }
+        result
+    }
+
+    /// Check if isolation is currently enabled.
+    fn is_enabled(app: &tauri::AppHandle) -> bool {
+        let backend = StateBackend::new();
+        backend.is_enabled(app)
+    }
+
+    /// Get current isolation state.
+    fn get_state(app: &tauri::AppHandle) -> NetworkIsolation {
+        let backend = StateBackend::new();
+        backend.get_state(app)
+    }
+}
+
+/// Check current network connectivity.
+fn check_network_online() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([1, 1, 1, 1], 80)),
+        std::time::Duration::from_millis(1000),
+    ).is_ok()
+}
+
+/// Background network monitoring thread.
+/// Polls network state while CBT exam is ACTIVE.
+/// Exits when CbtState transitions to IDLE.
+fn start_network_monitor(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let poll_interval_secs = 5;
+        let mut last_online: Option<bool> = None;
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(poll_interval_secs));
+
+            // Check if CBT is still active
+            let is_active = {
+                let cbt_state = app.state::<CbtState>();
+                let phase = cbt_state.phase.lock().unwrap();
+                *phase == CbtPhase::Active
+            };
+
+            if !is_active {
+                println!("[CBT][PHASE_4B][NETWORK] monitoring stopped (exam idle)");
+                break;
+            }
+
+            let current_online = check_network_online();
+            let current_state = if current_online { "ONLINE" } else { "OFFLINE" };
+
+            match last_online {
+                None => {
+                    // First check
+                    println!("[CBT][PHASE_4B][NETWORK] state={}", current_state);
+                }
+                Some(prev) if prev != current_online => {
+                    // State transition
+                    let transition = if current_online { "OFFLINE -> ONLINE" } else { "ONLINE -> OFFLINE" };
+                    println!("[CBT][PHASE_4B][NETWORK] TRANSITION {}", transition);
+                }
+                _ => {
+                    // No change, no log (to avoid spam)
+                }
+            }
+
+            last_online = Some(current_online);
+        }
+    });
+}
+
 #[tauri::command]
-fn handle_cbt_signal(event: String, window: tauri::Window) -> Result<(), String> {
+fn handle_cbt_signal(event: String, window: tauri::Window, app: tauri::AppHandle) -> Result<(), String> {
     println!("[CBT][PHASE_4B][HOST] SIGNAL_RECEIVED event={} source_window={}", event, window.label());
+
+    if event == "CBT_EXAM_READY" {
+        let cbt_state = app.state::<CbtState>();
+        *cbt_state.phase.lock().unwrap() = CbtPhase::Active;
+
+        // ── [SUNTIK ELEVASI ADMIN SAKLAR MATI WI-FI] ───────────────────
+        #[cfg(target_os = "windows")]
+        {
+            println!("[CBT][AUTOMATION] Forcefully elevating privileges to drop WiFi adapter...");
+            let _ = std::process::Command::new("powershell")
+                .args(&[
+                    "-ExecutionPolicy", "Bypass", "-Command", 
+                    "Start-Process powershell -ArgumentList '-Command Disable-NetAdapter -Name WiFi,WiFi* -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
+                ])
+                .output();
+            println!("[CBT][AUTOMATION] Elevated Wi-Fi disable command dispatched to OS loop.");
+        }
+        // ───────────────────────────────────────────────────────────────────
+
+        // Enable network isolation via controller
+        println!("[CBT][PHASE_4B][ISOLATION] ENABLE_REQUEST event={}", event);
+        let iso_enabled = NetworkIsolationController::enable(&app);
+        if iso_enabled.state_changed {
+            println!("[CBT][PHASE_4B][ISOLATION] ENABLED state=ON");
+        } else if iso_enabled.success {
+            println!("[CBT][PHASE_4B][ISOLATION] state=ON (already enabled)");
+        }
+
+        // Start network monitoring if not already running
+        let should_start = {
+            let mut monitoring = cbt_state.monitoring.lock().unwrap();
+            if !*monitoring {
+                *monitoring = true;
+                true
+            } else {
+                false
+            }
+        };
+
+        if should_start {
+            start_network_monitor(app.clone());
+        }
+
+        println!("[CBT][PHASE_4B][HOST] STATE_CHANGED state=ACTIVE event={}", event);
+    } else if event == "CBT_EXAM_SUBMITTED" {
+        // Reset CBT phase to IDLE - this also stops the network monitor
+        let cbt_state = app.state::<CbtState>();
+        *cbt_state.phase.lock().unwrap() = CbtPhase::Idle;
+
+        // ── [SUNTIK ELEVASI ADMIN SAKLAR HIDUPKAN WI-FI SEMPURNA] ──────────────
+        #[cfg(target_os = "windows")]
+        {
+            println!("[CBT][AUTOMATION] Forcefully elevating privileges to restore WiFi adapter...");
+            let _ = std::process::Command::new("powershell")
+                .args(&[
+                    "-ExecutionPolicy", "Bypass", "-Command", 
+                    "Start-Process powershell -ArgumentList '-Command Enable-NetAdapter -Name WiFi,WiFi* -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
+                ])
+                .output();
+            println!("[CBT][AUTOMATION] Elevated Wi-Fi enable command dispatched to OS loop.");
+        }
+        // ───────────────────────────────────────────────────────────────────
+
+        // Disable network isolation via controller
+        println!("[CBT][PHASE_4B][ISOLATION] DISABLE_REQUEST event={}", event);
+        let iso_disabled = NetworkIsolationController::disable(&app);
+        if iso_disabled.state_changed {
+            println!("[CBT][PHASE_4B][ISOLATION] DISABLED state=OFF");
+        } else if iso_disabled.success {
+            println!("[CBT][PHASE_4B][ISOLATION] state=OFF (already disabled)");
+        }
+    }
+
+    Ok(())
+}
+
+
+#[tauri::command]
+fn get_cbt_state(app: tauri::AppHandle) -> Result<String, String> {
+    let cbt_state = app.state::<CbtState>();
+    let phase = cbt_state.phase.lock().unwrap();
+    let state_str = match *phase {
+        CbtPhase::Idle => "IDLE",
+        CbtPhase::Active => "ACTIVE",
+    };
+    Ok(state_str.to_string())   
+}
+
+#[tauri::command]
+fn get_network_state() -> Result<String, String> {
+    let is_online = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([1, 1, 1, 1], 80)),
+        std::time::Duration::from_millis(1000),
+    ).is_ok();
+    let state = if is_online { "ONLINE" } else { "OFFLINE" };
+    println!("[CBT][PHASE_4B][NETWORK] state={}", state);
+    Ok(state.to_string())
+}
+
+#[tauri::command]
+fn get_network_isolation_state(app: tauri::AppHandle) -> Result<String, String> {
+    let iso_state = app.state::<NetworkIsolationState>();
+    let iso = iso_state.isolation.lock().unwrap();
+    let state_str = match *iso {
+        NetworkIsolation::Off => "OFF",
+        NetworkIsolation::On => "ON",
+    };
+    Ok(state_str.to_string())
+}
+
+#[tauri::command]
+fn minimize_window(window: tauri::Window) -> Result<(), String> {
+    window.minimize().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-fn minimize_window(app: tauri::AppHandle) -> Result<(), String> {
-    let main = app.get_webview_window("main").ok_or("Window not found")?;
-    main.minimize().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
-    let main = app.get_webview_window("main").ok_or("Window not found")?;
-    let is_max = main.is_maximized().map_err(|e| e.to_string())?;
+fn toggle_maximize(window: tauri::Window) -> Result<(), String> {
+    let is_max = window.is_maximized().map_err(|e| e.to_string())?;
     if is_max {
-        main.unmaximize().map_err(|e| e.to_string())?;
+        window.unmaximize().map_err(|e| e.to_string())?;
     } else {
-        main.maximize().map_err(|e| e.to_string())?;
+        window.maximize().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-fn close_window(app: tauri::AppHandle) -> Result<(), String> {
-    
+fn close_window(app: tauri::AppHandle, window: tauri::Window) -> Result<(), String> {
     let session_mgr = app.state::<Mutex<SessionManager>>();
     if let Ok(mut session) = session_mgr.lock() {
         if let Some(ref mut s) = session.current_session {
@@ -1510,12 +1887,16 @@ fn close_window(app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    
     let lifecycle = app.state::<WebViewLifecycle>();
     lifecycle.set_destroyed();
 
-    let main = app.get_webview_window("main").ok_or("Window not found")?;
-    main.close().map_err(|e| e.to_string())
+    window.close().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn raise_browser_zorder(window: tauri::Window) -> Result<(), String> {
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1827,6 +2208,39 @@ async fn navigate_browser(
     #[allow(non_snake_case)]
     navigationType: String,
 ) -> Result<(), String> {
+    // ── CBT Phase 4B: Network Isolation Enforcement ─────────────────────────────
+    // When isolation is ON, only CBT origin (http://localhost:5173) is allowed.
+    // All other navigation is blocked to enforce exam isolation.
+    if NetworkIsolationController::is_enabled(&app) {
+        // Validate URL using proper parsing
+        let parsed = url::Url::parse(&url);
+        let is_cbt_allowed = match parsed {
+            Ok(ref u) => {
+                // CBT requires:
+                // - scheme = "http"
+                // - host = "localhost" or "127.0.0.1"
+                // - port = 5173 (must be explicitly set)
+                let scheme_ok = u.scheme() == "http";
+                let host_ok = u.host_str() == Some("localhost") || u.host_str() == Some("127.0.0.1");
+                // Port must be explicitly 5173
+                let port_ok = u.port() == Some(5173);
+                scheme_ok && host_ok && port_ok
+            }
+            Err(_) => false,
+        };
+
+        if !is_cbt_allowed {
+            println!("[BRWSR][ISOLATION_GUARD] Navigation attempt BLOCKED for unauthorized target.");
+            return Err(format!(
+                "[BRWSR][ISOLATION_GUARD] Navigation blocked: {} is not allowed during exam",
+                url
+            ));
+        }
+
+        println!("[BRWSR][ISOLATION_GUARD] CBT origin allowed: {}", url);
+    }
+    // ─────────────────────────────────────────────────────────────────────────────
+
     let lifecycle = app.state::<WebViewLifecycle>();
     let browser_state = app.state::<BrowserWebview>();
 
@@ -1853,6 +2267,17 @@ async fn navigate_browser(
         size: LogicalSize::new(main_logical_width, browser_height).into(),
     };
 
+    // Synchronize browser WebView bounds to match window size.
+    // Called on window resize/maximize/restore to keep WebView properly sized.
+    fn sync_browser_bounds(browser_state: &BrowserWebview, browser_bounds: Rect) {
+        let mut browser_wv = browser_state.webview.lock().unwrap();
+        if let Some(ref wv) = *browser_wv {
+            if let Err(e) = wv.set_bounds(browser_bounds) {
+                log::warn!("[RESIZE] Failed to sync browser bounds: {}", e);
+            }
+        }
+    }
+
     // Create the browser child WebView if not yet created.
     let browser_created = {
         let mut browser_wv = browser_state.webview.lock().unwrap();
@@ -1873,6 +2298,16 @@ async fn navigate_browser(
                 "[NAVIGATE] add_child succeeded: bounds=({:.0},{:.0}) size=({:.0}x{:.0})",
                 0.0, UI_HEIGHT, main_logical_width, browser_height
             );
+
+            // Install persistent URL tracker via WebView2's AddScriptToExecuteOnDocumentCreated
+            // This runs on EVERY document after navigation
+            #[cfg(windows)]
+            {
+                if let Err(e) = install_url_tracker_on_webview(&browser_webview) {
+                    log::warn!("[URL-TRACKER] Failed to install persistent tracker: {}", e);
+                }
+            }
+
             *browser_wv = Some(browser_webview);
 
             // ── FORENSIC: Browser WRY created — log lifecycle event ──────────────
@@ -2089,6 +2524,98 @@ async fn forward_browser(app: tauri::AppHandle) -> Result<(), String> {
     wv.eval("window.history.forward()").map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_webview_url(app: tauri::AppHandle) -> Result<String, String> {
+    let browser_state = app.state::<BrowserWebview>();
+    let webview = browser_state.webview.lock().unwrap();
+    let wv = webview.as_ref().ok_or("Browser not created")?;
+    // Inject a script that stores the URL in a global variable
+    wv.eval("window.__BRWSR_URL__ = window.location.href;")
+        .map_err(|e| e.to_string())?;
+    // Now read it - eval returns (), so we can't get the value directly
+    // As a workaround, emit an event with the URL from the injected script
+    // The script will be set up to emit on load
+    Ok("".to_string())
+}
+
+#[tauri::command]
+fn inject_url_tracker(app: tauri::AppHandle) -> Result<(), String> {
+    // NO-OP: The persistent tracker is now installed via AddScriptToExecuteOnDocumentCreated
+    // during WebView creation. This command is kept for backwards compatibility.
+    Ok(())
+}
+
+/// Installs a persistent URL tracker via WebView2's AddScriptToExecuteOnDocumentCreated.
+/// This script runs automatically on EVERY new document after navigation.
+/// Call this ONCE when the browser WebView is first created.
+#[cfg(windows)]
+pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    use windows::core::Interface;
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED};
+
+    let webview_url_script = r#"
+        (function() {
+            function emitUrl() {
+                var url = window.location.href;
+                window.__BRWSR_URL__ = url;
+                try {
+                    if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+                        window.__TAURI__.core.invoke('webview_url_update', {url: url}).catch(function() {});
+                    }
+                } catch(e) {}
+            }
+            if (window.__BRWSR_TRACKER__) return;
+            window.__BRWSR_TRACKER__ = true;
+            window.addEventListener('pageshow', emitUrl);
+            window.addEventListener('DOMContentLoaded', emitUrl);
+            emitUrl();
+        })();
+    "#;
+
+    let result = browser_webview.with_webview(move |wv| {
+        use windows::core::Interface;
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+
+        let webview2: ICoreWebView2 = match unsafe { wv.controller().CoreWebView2() } {
+            Ok(w) => w,
+            Err(_) => return,
+        };
+
+        // AddScriptToExecuteOnDocumentCreated executes on EVERY new document
+        // This is the WebView2 API for persistent script injection
+        let script_bstr = windows::core::BSTR::from(&*webview_url_script);
+        match unsafe { webview2.AddScriptToExecuteOnDocumentCreated(&script_bstr, None) } {
+            Ok(()) => {
+                log::info!("[URL-TRACKER] Persistent script registered for document-created");
+            }
+            Err(e) => {
+                log::warn!("[URL-TRACKER] AddScriptToExecuteOnDocumentCreated failed: {:?}", e);
+            }
+        }
+    });
+
+    match result {
+        Ok(()) => {
+            log::info!("[URL-TRACKER] Persistent URL tracker installed successfully");
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("[URL-TRACKER] with_webview failed: {}", e);
+            Err(format!("with_webview failed: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+fn webview_url_update(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    log::info!("[URL-TRACKER] URL updated: {}", url);
+    // Emit event to frontend so it can update the address bar
+    use tauri::Emitter;
+    app.emit("webview-url-changed", &url)
+        .map_err(|e| format!("emit failed: {}", e))?;
+    Ok(())
+}
 
 
 
@@ -5037,12 +5564,18 @@ fn main() {
         .manage(BrowserOverlayState::default())
         .manage(OverlayWindowState::default())
         .manage(DebugOverlayState::default())
+        .manage(CbtState::default())
+        .manage(NetworkIsolationState::default())
         .invoke_handler(tauri::generate_handler![
             handle_cbt_signal,
+            get_cbt_state,
+            get_network_state,
+            get_network_isolation_state,
 
             minimize_window,
             toggle_maximize,
             close_window,
+            raise_browser_zorder,
             get_app_version,
             is_benchmark_mode,
             exit_app,
@@ -5066,7 +5599,10 @@ fn main() {
             reload_browser,
             back_browser,
             forward_browser,
-            
+            get_webview_url,
+            inject_url_tracker,
+            webview_url_update,
+
             create_tab,
             switch_tab,
             close_tab,
@@ -5205,6 +5741,37 @@ fn main() {
                 // On main window gaining focus: ensure React UI stays above browser.
                 tauri::WindowEvent::Focused(true) => {
                     ensure_react_ui_above_browser(&main_window_for_zorder.as_ref().window());
+                }
+                // On window resize/maximize/restore: synchronize browser WebView bounds.
+                tauri::WindowEvent::Resized(_) => {
+                    let browser_state = handle.state::<BrowserWebview>();
+                    // Skip if browser WebView not yet created (will be created with correct bounds on first navigation).
+                    if browser_state.webview.lock().unwrap().is_none() {
+                        return;
+                    }
+                    if let Some(main_win) = handle.get_window("main") {
+                        let main_size = match main_win.inner_size() {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let scale = match main_win.scale_factor() {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let main_logical_height = main_size.height as f64 / scale;
+                        let main_logical_width = main_size.width as f64 / scale;
+                        let browser_height = main_logical_height - UI_HEIGHT;
+                        let browser_bounds = Rect {
+                            position: LogicalPosition::new(0.0, UI_HEIGHT).into(),
+                            size: LogicalSize::new(main_logical_width, browser_height).into(),
+                        };
+                        let browser_wv = browser_state.webview.lock().unwrap();
+                        if let Some(ref wv) = *browser_wv {
+                            if let Err(e) = wv.set_bounds(browser_bounds) {
+                                log::warn!("[RESIZE] Failed to sync browser bounds: {}", e);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             });

@@ -55,6 +55,14 @@ export const browser = {
     return await invoke("forward_browser");
   },
 
+  async getWebviewUrl() {
+    return await invoke("get_webview_url");
+  },
+
+  async injectUrlTracker() {
+    return await invoke("inject_url_tracker");
+  },
+
   async minimize() {
     return await invoke("minimize_window");
   },

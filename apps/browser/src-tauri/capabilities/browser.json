@@ -29,6 +29,23 @@
     "log:default",
     "core:default",
     "allow-handle-cbt-signal",
-    "allow-navigate-browser"
+    "allow-navigate-browser",
+    "allow-get-cbt-state",
+    "allow-get-network-state",
+    "allow-get-network-isolation-state",
+    "allow-show-native-overlay",
+    "allow-hide-native-overlay",
+    "allow-is-native-overlay-visible",
+    "allow-minimize-window",
+    "allow-toggle-maximize",
+    "allow-close-window",
+    "allow-raise-browser-zorder",
+    "allow-reload-browser",
+    "allow-back-browser",
+    "allow-forward-browser",
+    "allow-get-webview-url",
+    "allow-inject-url-tracker",
+    "allow-get-webview-state",
+    "allow-webview-url-update"
   ]
 }

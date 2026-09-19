@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-webview-url-update"
+description = "Enables the webview_url_update command without any pre-configured scope."
+commands.allow = ["webview_url_update"]

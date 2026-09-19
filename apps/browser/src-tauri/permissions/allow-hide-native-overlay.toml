@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-hide-native-overlay"
+description = "Enables the hide_native_overlay command to hide the native floating overlay window."
+commands.allow = ["hide_native_overlay"]

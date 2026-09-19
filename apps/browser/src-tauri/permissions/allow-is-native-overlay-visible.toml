@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-is-native-overlay-visible"
+description = "Enables the is_native_overlay_visible command to check overlay visibility state."
+commands.allow = ["is_native_overlay_visible"]

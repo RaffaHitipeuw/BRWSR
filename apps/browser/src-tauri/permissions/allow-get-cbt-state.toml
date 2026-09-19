@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-get-cbt-state"
+description = "Enables the get_cbt_state command without any pre-configured scope."
+commands.allow = ["get_cbt_state"]

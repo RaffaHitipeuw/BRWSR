@@ -272,7 +272,7 @@ function NavButton({ onClick, disabled, title, children }) {
         "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
         disabled
           ? "text-gray-300 cursor-not-allowed"
-          : "text-gray-300 hover:bg-gray-100 active:bg-gray-200"
+          : "text-gray-600 hover:bg-gray-100 active:bg-gray-200"
       )}
     >
       {children}

@@ -357,16 +357,118 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the back_browser command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-back-browser",
+          "markdownDescription": "Enables the back_browser command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the close_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-close-window",
+          "markdownDescription": "Enables the close_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the forward_browser command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-forward-browser",
+          "markdownDescription": "Enables the forward_browser command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_cbt_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-cbt-state",
+          "markdownDescription": "Enables the get_cbt_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_network_isolation_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-network-isolation-state",
+          "markdownDescription": "Enables the get_network_isolation_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_network_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-network-state",
+          "markdownDescription": "Enables the get_network_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_webview_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-webview-state",
+          "markdownDescription": "Enables the get_webview_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_webview_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-webview-url",
+          "markdownDescription": "Enables the get_webview_url command without any pre-configured scope."
+        },
+        {
           "description": "Enables the handle_cbt_signal command without any pre-configured scope.",
           "type": "string",
           "const": "allow-handle-cbt-signal",
           "markdownDescription": "Enables the handle_cbt_signal command without any pre-configured scope."
         },
         {
+          "description": "Enables the hide_native_overlay command to hide the native floating overlay window.",
+          "type": "string",
+          "const": "allow-hide-native-overlay",
+          "markdownDescription": "Enables the hide_native_overlay command to hide the native floating overlay window."
+        },
+        {
+          "description": "Enables the inject_url_tracker command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-inject-url-tracker",
+          "markdownDescription": "Enables the inject_url_tracker command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the is_native_overlay_visible command to check overlay visibility state.",
+          "type": "string",
+          "const": "allow-is-native-overlay-visible",
+          "markdownDescription": "Enables the is_native_overlay_visible command to check overlay visibility state."
+        },
+        {
+          "description": "Enables the minimize_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-minimize-window",
+          "markdownDescription": "Enables the minimize_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the navigate_browser command without any pre-configured scope.",
           "type": "string",
           "const": "allow-navigate-browser",
           "markdownDescription": "Enables the navigate_browser command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the raise_browser_zorder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-raise-browser-zorder",
+          "markdownDescription": "Enables the raise_browser_zorder command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reload_browser command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reload-browser",
+          "markdownDescription": "Enables the reload_browser command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the show_native_overlay command to display the native floating overlay window.",
+          "type": "string",
+          "const": "allow-show-native-overlay",
+          "markdownDescription": "Enables the show_native_overlay command to display the native floating overlay window."
+        },
+        {
+          "description": "Enables the toggle_maximize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-toggle-maximize",
+          "markdownDescription": "Enables the toggle_maximize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the webview_url_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-webview-url-update",
+          "markdownDescription": "Enables the webview_url_update command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

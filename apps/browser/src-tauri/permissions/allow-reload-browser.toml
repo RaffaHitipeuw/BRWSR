@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-reload-browser"
+description = "Enables the reload_browser command without any pre-configured scope."
+commands.allow = ["reload_browser"]

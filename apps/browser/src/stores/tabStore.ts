@@ -1,4 +1,3 @@
-
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { browser } from "../components/browserCommands";
@@ -202,6 +201,7 @@ export const useTabStore = create<TabStore>()(
             if (tab.id !== id) return tab;
 
             let title = tab.title;
+            let favicon = tab.favicon || "";
             if (title === "New Tab" || title === "Loading...") {
               try {
                 title = new URL(url).hostname;
@@ -210,11 +210,20 @@ export const useTabStore = create<TabStore>()(
               }
             }
 
+            // Update favicon from hostname using Google's favicon service
+            try {
+              const hostname = new URL(url).hostname;
+              favicon = `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+            } catch {
+              // Keep existing favicon if URL is invalid
+            }
+
             const newHistory = [...tab.history.slice(0, tab.historyIndex + 1), url];
 
             return {
               ...tab,
               title,
+              favicon,
               url,
               history: newHistory,
               historyIndex: newHistory.length - 1,
@@ -238,9 +247,18 @@ export const useTabStore = create<TabStore>()(
           tabs: state.tabs.map((tab) => {
             if (tab.id !== id || tab.historyIndex <= 0) return tab;
             const newIndex = tab.historyIndex - 1;
+            const newUrl = tab.history[newIndex];
+            let favicon = "";
+            try {
+              const hostname = new URL(newUrl).hostname;
+              favicon = `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+            } catch {
+              // Keep empty favicon for invalid URLs
+            }
             return {
               ...tab,
-              url: tab.history[newIndex],
+              favicon,
+              url: newUrl,
               historyIndex: newIndex,
               canGoBack: newIndex > 0,
               canGoForward: true,
@@ -256,9 +274,18 @@ export const useTabStore = create<TabStore>()(
           tabs: state.tabs.map((tab) => {
             if (tab.id !== id || tab.historyIndex >= tab.history.length - 1) return tab;
             const newIndex = tab.historyIndex + 1;
+            const newUrl = tab.history[newIndex];
+            let favicon = "";
+            try {
+              const hostname = new URL(newUrl).hostname;
+              favicon = `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+            } catch {
+              // Keep empty favicon for invalid URLs
+            }
             return {
               ...tab,
-              url: tab.history[newIndex],
+              favicon,
+              url: newUrl,
               historyIndex: newIndex,
               canGoBack: true,
               canGoForward: newIndex < tab.history.length - 1,

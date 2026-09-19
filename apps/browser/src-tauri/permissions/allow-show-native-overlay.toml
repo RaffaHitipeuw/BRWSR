@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-show-native-overlay"
+description = "Enables the show_native_overlay command to display the native floating overlay window."
+commands.allow = ["show_native_overlay"]
