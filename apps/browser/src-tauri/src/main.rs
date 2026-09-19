@@ -2303,7 +2303,7 @@ async fn navigate_browser(
             // This runs on EVERY document after navigation
             #[cfg(windows)]
             {
-                if let Err(e) = install_url_tracker_on_webview(&browser_webview) {
+                if let Err(e) = install_url_tracker_on_webview(&browser_webview, &app) {
                     log::warn!("[URL-TRACKER] Failed to install persistent tracker: {}", e);
                 }
             }
@@ -2549,7 +2549,7 @@ fn inject_url_tracker(app: tauri::AppHandle) -> Result<(), String> {
 /// This script runs automatically on EVERY new document after navigation.
 /// Call this ONCE when the browser WebView is first created.
 #[cfg(windows)]
-pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview) -> Result<(), String> {
+pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview, app: &tauri::AppHandle) -> Result<(), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use windows::core::Interface;
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED};
@@ -2557,6 +2557,9 @@ pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview) -> Resul
     let webview_url_script = r#"
         (function() {
             function emitUrl() {
+                // Only report the top-level document URL — ignore iframe documents
+                // This prevents iframe URLs (e.g. SODAR) from overwriting the tab URL
+                if (window !== window.top) return;
                 var url = window.location.href;
                 window.__BRWSR_URL__ = url;
                 try {
@@ -2609,6 +2612,10 @@ pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview) -> Resul
 
 #[tauri::command]
 fn webview_url_update(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    // Diagnostic: log every URL received from the injected tracker.
+    // If SODAR appears here, it means the tracker ran inside an iframe (bug).
+    // With the fix, only top-level window.location.href reaches here.
+    log::info!("[WEBVIEW-NAV] URI={}", url);
     log::info!("[URL-TRACKER] URL updated: {}", url);
     // Emit event to frontend so it can update the address bar
     use tauri::Emitter;
