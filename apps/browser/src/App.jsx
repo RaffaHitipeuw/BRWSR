@@ -44,6 +44,65 @@ function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [save]);
 
+  // ── Phase 1+2+3: Startup update check, download, and install ────────────────
+  // Phase 1: detects whether an update exists and logs the result.
+  // Phase 2: downloads the update (without installing).
+  // Phase 3: installs the downloaded update and restarts the application.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const update = await check();
+        if (!cancelled) {
+          if (!update) {
+            console.info("[Updater] No update available");
+            return;
+          }
+          console.info("[Updater] Update available:", update.version);
+
+          // Phase 2: download the update
+          await update.download((progress) => {
+            if (progress.event === "Started") {
+              const bytes = progress.data.contentLength;
+              console.info(
+                bytes
+                  ? `[Updater] Download started: ${(bytes / 1024 / 1024).toFixed(1)} MB`
+                  : "[Updater] Download started"
+              );
+            } else if (progress.event === "Progress") {
+              const mb = (progress.data.chunkLength / 1024 / 1024).toFixed(1);
+              console.info(`[Updater] Download progress: +${mb} MB`);
+            }
+          });
+
+          if (!cancelled) {
+            console.info("[Updater] Update downloaded:", update.version);
+          }
+
+          // Phase 3: install the update and restart
+          if (!cancelled) {
+            console.info("[Updater] Installing update:", update.version);
+            await update.install();
+            // On Windows, install() exits the app after launching the installer.
+            // If we reach here, install returned (non-Windows or installer silent mode).
+            console.info("[Updater] Update installed:", update.version);
+            console.info("[Updater] Restarting application");
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("[Updater] Check failed:", err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);  // ──────────────────────────────────────────────────────────────────────────
+
   // Navigate on tab switch. Always call browser.navigate when switching tabs —
   // even if the target URL equals the last navigated URL, the WebView may be
   // showing a different tab's content (e.g. after duplicateTab or rapid switches).
