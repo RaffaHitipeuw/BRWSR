@@ -18,6 +18,7 @@ log = "0.4"
 tokio = { version = "1", features = ["time"] }
 url = "2"
 sysinfo = "0.31"
+tauri-plugin-updater = "2"
 
 # P0: WebView2 Telemetry - must match wry's webview2-com version
 [target.'cfg(target_os = "windows")'.dependencies]
