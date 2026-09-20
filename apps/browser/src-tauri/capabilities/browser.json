@@ -2,8 +2,8 @@
   "$schema": "https://schema.tauri.app/config/2/capabilities",
   "identifier": "browser-capability",
   "description": "Capability for the EduOS Browser",
-  "windows": ["main"],
-  "webviews": ["browser"],
+  "windows": ["main", "native-overlay"],
+  "webviews": ["browser", "native-overlay"],
   "remote": {
     "urls": ["http://localhost:5173", "https://*"]
   },
@@ -46,6 +46,8 @@
     "allow-get-webview-url",
     "allow-inject-url-tracker",
     "allow-get-webview-state",
-    "allow-webview-url-update"
+    "allow-webview-url-update",
+    "allow-emit-history-navigate",
+    "allow-create-tab"
   ]
 }

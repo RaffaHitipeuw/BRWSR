@@ -369,6 +369,18 @@
           "markdownDescription": "Enables the close_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the create_tab command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-tab",
+          "markdownDescription": "Enables the create_tab command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the emit_history_navigate command for history page navigation.",
+          "type": "string",
+          "const": "allow-emit-history-navigate",
+          "markdownDescription": "Enables the emit_history_navigate command for history page navigation."
+        },
+        {
           "description": "Enables the forward_browser command without any pre-configured scope.",
           "type": "string",
           "const": "allow-forward-browser",

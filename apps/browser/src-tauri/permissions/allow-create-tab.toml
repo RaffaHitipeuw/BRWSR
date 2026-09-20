@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-create-tab"
+description = "Enables the create_tab command without any pre-configured scope."
+commands.allow = ["create_tab"]

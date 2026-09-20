@@ -4,8 +4,8 @@
     "description": "Capability for the EduOS Browser",
     "remote": { "urls": ["http://localhost:5173", "https://*"] },
     "local": true,
-    "windows": ["main"],
-    "webviews": ["browser"],
+    "windows": ["main", "native-overlay"],
+    "webviews": ["browser", "native-overlay"],
     "permissions": [
       "core:default",
       "core:window:default",
@@ -45,7 +45,9 @@
       "allow-get-webview-url",
       "allow-inject-url-tracker",
       "allow-get-webview-state",
-      "allow-webview-url-update"
+      "allow-webview-url-update",
+      "allow-emit-history-navigate",
+      "allow-create-tab"
     ]
   }
 }

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-emit-history-navigate"
+description = "Enables the emit_history_navigate command for history page navigation."
+commands.allow = ["emit_history_navigate"]

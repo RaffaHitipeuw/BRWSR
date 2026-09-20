@@ -301,6 +301,7 @@ fn ensure_react_ui_above_browser(main_window: &tauri::Window) {
 #[cfg(not(target_os = "windows"))]
 fn ensure_react_ui_above_browser(main_window: &tauri::Window) {}
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -320,6 +321,11 @@ use forensic::{
     kv, line, log_app_info, log_event, log_setwindowpos, section, stage,
 };
 use startup_profiler::StartupProfiler;
+
+/// Bundled internal pages — loaded via include_str! so they can be served
+/// as data: URLs through the existing webview.eval() navigation path.
+const HISTORY_HTML: &str = include_str!("../../src/history.html");
+const DOWNLOADS_HTML: &str = include_str!("../../src/downloads.html");
 
 /// A single overlay exclusion rectangle, in browser WRY local coordinates (physical pixels).
 /// Coordinates are relative to the browser WRY window origin.
@@ -2211,7 +2217,8 @@ async fn navigate_browser(
     // ── CBT Phase 4B: Network Isolation Enforcement ─────────────────────────────
     // When isolation is ON, only CBT origin (http://localhost:5173) is allowed.
     // All other navigation is blocked to enforce exam isolation.
-    if NetworkIsolationController::is_enabled(&app) {
+    // brwsr://ntp is always allowed — it is a local page with no network request.
+    if NetworkIsolationController::is_enabled(&app) && url != "brwsr://ntp" {
         // Validate URL using proper parsing
         let parsed = url::Url::parse(&url);
         let is_cbt_allowed = match parsed {
@@ -2239,6 +2246,24 @@ async fn navigate_browser(
 
         println!("[BRWSR][ISOLATION_GUARD] CBT origin allowed: {}", url);
     }
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── NTP Phase 1A: Dev uses embedded data URL, production uses bundled local asset ──
+    // Dev (debug_assertions=true): dist/ doesn't exist, only brwsr://ntp uses embedded fallback;
+    // brwsr://history and brwsr://downloads pass through unchanged.
+    // Prod (debug_assertions=false): all resolve to bundled pages or data URLs.
+    let url = if url == "brwsr://ntp" {
+        if cfg!(debug_assertions) {
+            const NTP_HTML: &str = "data:text/html,%3C!DOCTYPE%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22UTF-8%22%3E%3Cstyle%3E*%7Bmargin%3A0%3Bpadding%3A0%3Bbox-sizing%3Aborder-box%3B%7Dhtml%2Cbody%7Bwidth%3A100%25%3Bheight%3A100%25%3Bbackground%3A%23e8e8e8%3B%7D%3C%2Fstyle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E";
+            log::info!("[NTP] dev: using embedded data URL");
+            NTP_HTML.to_string()
+        } else {
+            log::info!("[NTP] prod: using bundled local asset");
+            url
+        }
+    } else {
+        url
+    };
     // ─────────────────────────────────────────────────────────────────────────────
 
     let lifecycle = app.state::<WebViewLifecycle>();
@@ -2282,9 +2307,34 @@ async fn navigate_browser(
     let browser_created = {
         let mut browser_wv = browser_state.webview.lock().unwrap();
         if browser_wv.is_none() {
-            let parsed_url = url::Url::parse(&url)
-                .map_err(|e| format!("Invalid URL: {}", e))?;
-            let webview_url = WebviewUrl::External(parsed_url);
+            // ── Internal page routing: ntp / history / downloads ─────────────────────
+            // Dev: all use WebviewUrl::External (brwsr:// URLs parse as valid URLs)
+            // Prod: ntp=data URL, history/downloads=WebviewUrl::App
+            let webview_url = if !cfg!(debug_assertions) && (url == "brwsr://ntp" || url == "brwsr://history" || url == "brwsr://downloads") {
+                match url.as_str() {
+                    "brwsr://ntp" => {
+                        const NTP_HTML: &str = "data:text/html,%3C!DOCTYPE%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22UTF-8%22/%3E%3Ctitle%3ENew%20Tab%3C/title%3E%3Cstyle%3E*%7Bmargin%3A0%3Bpadding%3A0%7Dbody%7Bbackground%3A%23e8e8e8%7D%3C/style%3E%3C/body%3E%3C/html%3E";
+                        log::info!("[NTP] prod: embedded data URL");
+                        WebviewUrl::External(url::Url::parse(&NTP_HTML).unwrap())
+                    }
+                    "brwsr://history" => {
+                        log::info!("[HIST] prod: WebviewUrl::App(\"src/history.html\")");
+                        WebviewUrl::App("src/history.html".into())
+                    }
+                    "brwsr://downloads" => {
+                        log::info!("[DL] prod: WebviewUrl::App(\"src/downloads.html\")");
+                        WebviewUrl::App("src/downloads.html".into())
+                    }
+                    _ => {
+                        let parsed = url::Url::parse(&url).map_err(|e| format!("{}", e))?;
+                        WebviewUrl::External(parsed)
+                    }
+                }
+            } else {
+                let parsed_url = url::Url::parse(&url).map_err(|e| format!("Invalid URL: {}", e))?;
+                WebviewUrl::External(parsed_url)
+            };
+            // ────────────────────────────────────────────────────────────────────
             let builder = Webview::builder("browser", webview_url);
             let browser_webview = main_window
                 .add_child(
@@ -2410,6 +2460,70 @@ async fn navigate_browser(
     lifecycle.mark_active();
 
     // Navigate to the requested URL.
+    // Dev mode: navigate to dev server URL so history/downloads pages share the React app's
+    // localStorage origin (http://localhost:5173). No document.write(), no CSP issues, no null origin.
+    // Production: use webview.eval(document.write()) as before.
+    let is_internal_dev = cfg!(debug_assertions) && (url == "brwsr://history" || url == "brwsr://downloads");
+    let is_internal_prod = !cfg!(debug_assertions) && (url == "brwsr://ntp" || url == "brwsr://history" || url == "brwsr://downloads");
+    if is_internal_dev || is_internal_prod {
+        if let Some(ref webview) = *browser_state.webview.lock().unwrap() {
+            forensic::log_event(main_hwnd.0 as isize, "NAVIGATE_INTERNAL", &url);
+            match url.as_str() {
+                "brwsr://ntp" => {
+                    // NTP is a minimal placeholder — embed as data URL (production only)
+                    const NTP_HTML: &str = r#"<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>New Tab</title><style>*{margin:0;padding:0}body{background:#e8e8e8}</style></head><body></body></html>"#;
+                    let encoded = STANDARD.encode(NTP_HTML.as_bytes());
+                    let script = format!("window.location.href='data:text/html;charset=utf-8;base64,{}'", encoded);
+                    webview.eval(&script).map_err(|e| format!("NTP navigation failed: {}", e))?;
+                }
+                "brwsr://history" => {
+                    if cfg!(debug_assertions) {
+                        // Dev mode: navigate to dev server URL (same origin as React app → shared localStorage)
+                        let dev_url = url::Url::parse("http://localhost:1421/src/history.html")
+                            .map_err(|e| format!("Invalid dev URL: {}", e))?;
+                        webview.navigate(dev_url)
+                            .map_err(|e: tauri::Error| format!("History navigation failed: {}", e))?;
+                    } else {
+                        // Production: use document.write() with embedded HTML
+                        let escaped = HISTORY_HTML
+                            .replace('\\', "\\\\")
+                            .replace('\'', "\\x27")
+                            .replace('\n', "\\n")
+                            .replace('\r', "\\r")
+                            .replace('\t', "\\t");
+                        let script = format!(
+                            "(function(html){{document.open();document.write(html);document.close();}})('{}');",
+                            escaped
+                        );
+                        webview.eval(&script).map_err(|e| format!("History navigation failed: {}", e))?;
+                    }
+                }
+                "brwsr://downloads" => {
+                    if cfg!(debug_assertions) {
+                        let dev_url = url::Url::parse("http://localhost:1421/src/downloads.html")
+                            .map_err(|e| format!("Invalid dev URL: {}", e))?;
+                        webview.navigate(dev_url)
+                            .map_err(|e: tauri::Error| format!("Downloads navigation failed: {}", e))?;
+                    } else {
+                        let escaped = DOWNLOADS_HTML
+                            .replace('\\', "\\\\")
+                            .replace('\'', "\\x27")
+                            .replace('\n', "\\n")
+                            .replace('\r', "\\r")
+                            .replace('\t', "\\t");
+                        let script = format!(
+                            "(function(html){{document.open();document.write(html);document.close();}})('{}');",
+                            escaped
+                        );
+                        webview.eval(&script).map_err(|e| format!("Downloads navigation failed: {}", e))?;
+                    }
+                }
+                _ => {}
+            }
+            lifecycle.record_navigation_sync(&url, &tabId);
+            return Ok(());
+        }
+    }
     let target_url = url::Url::parse(&url)
         .map_err(|e| format!("Invalid URL: {}", e))?;
     if let Some(ref webview) = *browser_state.webview.lock().unwrap() {
@@ -2568,11 +2682,30 @@ pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview, app: &ta
                     }
                 } catch(e) {}
             }
+            function setupHistoryClick() {
+                // Only activate on history page
+                if (!window.location.href.startsWith('brwsr://history')) return;
+                var list = document.getElementById('list');
+                if (!list) return;
+                list.addEventListener('click', function(e) {
+                    var item = e.target.closest('.item');
+                    if (!item) return;
+                    var url = item.getAttribute('data-url');
+                    if (!url) return;
+                    try {
+                        if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+                            window.__TAURI__.core.invoke('emit_history_navigate', {url: url}).catch(function() {});
+                        }
+                    } catch(e) {}
+                });
+            }
             if (window.__BRWSR_TRACKER__) return;
             window.__BRWSR_TRACKER__ = true;
             window.addEventListener('pageshow', emitUrl);
             window.addEventListener('DOMContentLoaded', emitUrl);
+            window.addEventListener('DOMContentLoaded', setupHistoryClick);
             emitUrl();
+            setupHistoryClick();
         })();
     "#;
 
@@ -2621,6 +2754,17 @@ fn webview_url_update(app: tauri::AppHandle, url: String) -> Result<(), String> 
     use tauri::Emitter;
     app.emit("webview-url-changed", &url)
         .map_err(|e| format!("emit failed: {}", e))?;
+    Ok(())
+}
+
+/// Called from within the browser WebView (history.html) when user clicks a history item.
+/// Emits a 'history-navigate' event so React can navigate the current tab to the clicked URL.
+#[tauri::command]
+fn emit_history_navigate(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    log::info!("[HISTORY] item click: url={}", url);
+    use tauri::Emitter;
+    app.emit("history-navigate", &url)
+        .map_err(|e| format!("emit_history_navigate failed: {}", e))?;
     Ok(())
 }
 
@@ -5609,6 +5753,7 @@ fn main() {
             get_webview_url,
             inject_url_tracker,
             webview_url_update,
+            emit_history_navigate,
 
             create_tab,
             switch_tab,

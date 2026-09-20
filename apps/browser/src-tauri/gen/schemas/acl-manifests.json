@@ -12,6 +12,16 @@
         "description": "Enables the close_window command without any pre-configured scope.",
         "commands": { "allow": ["close_window"], "deny": [] }
       },
+      "allow-create-tab": {
+        "identifier": "allow-create-tab",
+        "description": "Enables the create_tab command without any pre-configured scope.",
+        "commands": { "allow": ["create_tab"], "deny": [] }
+      },
+      "allow-emit-history-navigate": {
+        "identifier": "allow-emit-history-navigate",
+        "description": "Enables the emit_history_navigate command for history page navigation.",
+        "commands": { "allow": ["emit_history_navigate"], "deny": [] }
+      },
       "allow-forward-browser": {
         "identifier": "allow-forward-browser",
         "description": "Enables the forward_browser command without any pre-configured scope.",
