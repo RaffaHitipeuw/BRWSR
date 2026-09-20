@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>History</title>
+
+    <!--
+      =====================================================================
+      FILE OVERVIEW (for Claude Code)
+      ---------------------------------------------------------------------
+      Internal browser page: History (eduos://history or equivalent).
+      - Pure static HTML + vanilla JS, no framework, no build step.
+      - NO dummy data. List is rendered from localStorage only.
+      - Data source: localStorage key "eduos-browser-history"
+        Expected shape (zustand persist format):
+          { "state": { "items": [ HistoryItem, ... ] }, "version": n }
+        HistoryItem:
+          { url: string, title?: string, favicon?: string, timestamp: number(ms) }
+        items[0] is assumed to be the NEWEST entry (no sorting done here).
+      - Sections below are marked with [STYLE], [MARKUP], [SCRIPT] tags.
+      =====================================================================
+    -->
+
+    <!-- =================== [STYLE] =================== -->
+    <style>
+      /* ---------- [STYLE] Design tokens (light + dark) ---------- */
+      :root {
+        --bg: #f6f7f9;
+        --surface: #ffffff;
+        --border: #e6e8ec;
+        --border-soft: #f0f1f4;
+        --text: #1b1f27;
+        --text-muted: #6b7280;
+        --text-faint: #9aa1ad;
+        --accent: #3b6ef5;
+        --hover: #f3f5f9;
+        --radius: 12px;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 16px rgba(16, 24, 40, 0.04);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --surface: #1c1f25;
+          --border: #2a2e36;
+          --border-soft: #23272e;
+          --text: #e8eaee;
+          --text-muted: #9aa1ad;
+          --text-faint: #6b7280;
+          --accent: #6b93ff;
+          --hover: #232730;
+          --shadow: none;
+        }
+      }
+
+      /* ---------- [STYLE] Base / reset ---------- */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.4;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ---------- [STYLE] Page container ---------- */
+      .page {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+
+      /* ---------- [STYLE] Header (title + count) ---------- */
+      .header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+      .title { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+      .count { font-size: 12px; color: var(--text-faint); }
+
+      /* ---------- [STYLE] List card ---------- */
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+
+      /* ---------- [STYLE] Single history row ---------- */
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border-soft);
+        cursor: default;
+        transition: background 0.12s ease;
+      }
+      .item:last-child { border-bottom: none; }
+      .item:hover { background: var(--hover); }
+
+      /* Favicon box: fixed size so rows stay aligned even if the icon fails */
+      .favicon-wrap {
+        width: 28px;
+        height: 28px;
+        flex-shrink: 0;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--hover);
+      }
+      .favicon { width: 16px; height: 16px; object-fit: contain; }
+      .favicon-fallback { width: 14px; height: 14px; color: var(--text-faint); }
+
+      /* Title + URL column (min-width:0 is required for ellipsis to work in flex) */
+      .item-info { flex: 1; min-width: 0; }
+      .item-title {
+        font-size: 13.5px;
+        font-weight: 500;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .item-url {
+        font-size: 11.5px;
+        color: var(--text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 1px;
+      }
+      .item-time {
+        font-size: 11.5px;
+        color: var(--text-faint);
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ---------- [STYLE] Empty state (shown when items.length === 0) ---------- */
+      .empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 56px 20px;
+        color: var(--text-muted);
+        text-align: center;
+      }
+      .empty svg { width: 32px; height: 32px; color: var(--text-faint); }
+      .empty-title { font-size: 14px; font-weight: 500; color: var(--text); }
+      .empty-sub { font-size: 12px; color: var(--text-faint); }
+    </style>
+  </head>
+
+  <body>
+    <!-- =================== [MARKUP] =================== -->
+    <div class="page">
+
+      <!-- [MARKUP] Header: page title + item count (count filled by JS) -->
+      <div class="header">
+        <div class="title">History</div>
+        <div class="count" id="count"></div>
+      </div>
+
+      <!-- [MARKUP] List container. #list is fully replaced by render() -->
+      <div class="card">
+        <div id="list"></div>
+      </div>
+
+    </div>
+
+    <!-- =================== [SCRIPT] =================== -->
+    <script>
+      (function () {
+        /* ---------- [SCRIPT] Config ---------- */
+        // localStorage key written by the browser's history store (zustand persist).
+        var STORE_KEY = "eduos-browser-history";
+        // Max rows rendered at once. Raise / paginate if history gets large.
+        var MAX_ITEMS = 50;
+
+        /* ---------- [SCRIPT] DOM refs ---------- */
+        var list = document.getElementById("list");
+        var countEl = document.getElementById("count");
+
+        /* ---------- [SCRIPT] Helper: escape HTML ----------
+           title/url come from web pages -> untrusted. Always escape before
+           putting into innerHTML to avoid XSS / broken markup. */
+        function escapeHtml(str) {
+          return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+        }
+
+        /* ---------- [SCRIPT] Helper: relative time formatter ----------
+           ts = epoch milliseconds. Falls back to locale date after 24h. */
+        function fmtTime(ts) {
+          var now = Date.now();
+          var diff = now - ts;
+          if (diff < 60000) return "just now";
+          if (diff < 3600000) return Math.floor(diff / 60000) + " min ago";
+          if (diff < 86400000) return Math.floor(diff / 3600000) + " hr ago";
+          return new Date(ts).toLocaleDateString();
+        }
+
+        /* ---------- [SCRIPT] Helper: read items from localStorage ----------
+           Returns [] on any failure (missing key, bad JSON, storage blocked). */
+        function readItems() {
+          try {
+            var raw = localStorage.getItem(STORE_KEY);
+            var parsed = raw ? JSON.parse(raw) : null;
+            return (parsed && parsed.state && parsed.state.items) || [];
+          } catch (_) {
+            return [];
+          }
+        }
+
+        /* ---------- [SCRIPT] Template: fallback globe icon ----------
+           Used when an item has no favicon. Inline SVG, no external asset. */
+        var FALLBACK_ICON =
+          '<svg class="favicon-fallback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+          '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>' +
+          '<path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20z"/></svg>';
+
+        /* ---------- [SCRIPT] Template: empty state ---------- */
+        var EMPTY_HTML =
+          '<div class="empty">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+              '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>' +
+            '<div class="empty-title">No history yet</div>' +
+            '<div class="empty-sub">Pages you visit will show up here.</div>' +
+          '</div>';
+
+        /* ---------- [SCRIPT] Render one row ----------
+           Builds the HTML for a single HistoryItem. All text is escaped.
+           data-url enables click-to-navigate via the injected URL tracker script. */
+        function renderItem(it) {
+          var title = escapeHtml(it.title || it.url || "");
+          var url = escapeHtml(it.url || "");
+          var rawUrl = it.url || "";  // raw (unescaped) for data-url attribute
+          var time = it.timestamp ? fmtTime(it.timestamp) : "";
+          var iconHtml = it.favicon
+            ? '<img class="favicon" src="' + escapeHtml(it.favicon) + '" alt="" ' +
+              // If the favicon fails to load, swap in the fallback globe icon.
+              "onerror=\"this.outerHTML=this.parentNode.getAttribute('data-fallback')\">"
+            : FALLBACK_ICON;
+
+          return (
+            '<div class="item" data-url="' + rawUrl.replace(/"/g, "&quot;") + '">' +
+              '<div class="favicon-wrap" data-fallback="' + escapeHtml(FALLBACK_ICON) + '">' + iconHtml + "</div>" +
+              '<div class="item-info">' +
+                '<div class="item-title">' + title + "</div>" +
+                '<div class="item-url">' + url + "</div>" +
+              "</div>" +
+              '<div class="item-time">' + escapeHtml(time) + "</div>" +
+            "</div>"
+          );
+        }
+
+        /* ---------- [SCRIPT] Main render ----------
+           Reads storage -> updates count -> fills #list (or empty state). */
+        function render() {
+          var items = readItems();
+
+          if (items.length === 0) {
+            countEl.textContent = "";
+            list.innerHTML = EMPTY_HTML;
+            return;
+          }
+
+          var n = Math.min(items.length, MAX_ITEMS);
+          countEl.textContent = items.length + (items.length === 1 ? " page" : " pages");
+
+          var html = "";
+          for (var i = 0; i < n; i++) html += renderItem(items[i]);
+          list.innerHTML = html;
+        }
+
+        /* ---------- [SCRIPT] Init ---------- */
+        render();
+
+        /* ---------- [SCRIPT] Realtime sync ----------
+           The 'storage' event fires when ANOTHER tab/webview writes to
+           localStorage, so the list updates live without a reload.
+           NOTE: it does NOT fire for writes from this same page. If the
+           history store lives in the same context, call window.__renderHistory()
+           after writes, or switch to a postMessage / Tauri event instead. */
+        window.addEventListener("storage", function (e) {
+          if (e.key === STORE_KEY) render();
+        });
+
+        // Manual hook so the host app can force a re-render.
+        window.__renderHistory = render;
+
+        // Keep relative times ("5 min ago") fresh without touching storage.
+        setInterval(render, 60000);
+      })();
+    </script>
+  </body>
+</html>

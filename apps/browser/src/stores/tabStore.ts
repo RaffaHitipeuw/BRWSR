@@ -32,8 +32,8 @@ export const useTabStore = create<TabStore>()(
         const newTab: Tab = {
           id,
           title: "New Tab",
-          url: url || "https://www.google.com",
-          history: [url || "https://www.google.com"],
+          url: url || "brwsr://ntp",
+          history: [url || "brwsr://ntp"],
           historyIndex: 0,
           isLoading: false,
           canGoBack: false,
@@ -77,7 +77,12 @@ export const useTabStore = create<TabStore>()(
 
         const newTabs = state.tabs.filter((tab) => tab.id !== id);
 
+        // When the last tab is removed, leave activeTabId as null so callers
+        // (e.g. handleCloseTab) can detect this and create a replacement tab.
+        // Previously this returned early without updating activeTabId at all,
+        // which left the store in an inconsistent state.
         if (newTabs.length === 0) {
+          set({ tabs: [], activeTabId: null, groups: state.groups });
           return;
         }
 
@@ -342,41 +347,59 @@ export const useTabStore = create<TabStore>()(
       duplicateTab: (id) => {
         const tab = get().tabs.find((t) => t.id === id);
         if (!tab) return;
-        get().addTab(tab.url, { isPinned: false });
+        const newTabId = get().addTab(tab.url, { isPinned: false });
+        if (newTabId) {
+          browser.createTab(newTabId).catch(() => {});
+        }
       },
 
       closeAllTabs: () => {
-        set((state) => {
-          const pinnedTabs = state.tabs.filter((t) => t.isPinned);
-          const newTab = {
-            id: Math.random().toString(36).substring(2, 9),
-            title: "New Tab",
-            url: "https://www.google.com",
-            history: ["https://www.google.com"],
-            historyIndex: 0,
-            isLoading: false,
-            canGoBack: false,
-            canGoForward: false,
-            isPinned: false,
-            isMuted: false,
-            createdAt: Date.now(),
-            lastAccessedAt: Date.now(),
-            estimated_memory_mb: 50,
-            lifecycle_state: "active" as TabLifecycleState,
-          };
+        const state = get();
+        const pinnedTabs = state.tabs.filter((t) => t.isPinned);
+        const newTab = {
+          id: Math.random().toString(36).substring(2, 9),
+          title: "New Tab",
+          url: "brwsr://ntp",
+          history: ["brwsr://ntp"],
+          historyIndex: 0,
+          isLoading: false,
+          canGoBack: false,
+          canGoForward: false,
+          isPinned: false,
+          isMuted: false,
+          createdAt: Date.now(),
+          lastAccessedAt: Date.now(),
+          estimated_memory_mb: 50,
+          lifecycle_state: "active" as TabLifecycleState,
+        };
 
-          return {
-            tabs: pinnedTabs.length > 0 ? [newTab] : [newTab],
-            activeTabId: newTab.id,
-          };
+        set({
+          tabs: pinnedTabs.length > 0 ? [newTab] : [newTab],
+          activeTabId: newTab.id,
         });
+
+        // Navigate the browser WebView to the new tab's URL.
+        // Without this, the WebView would remain on the stale URL from the
+        // previously active tab while the React state correctly shows the new tab.
+        browser.createTab(newTab.id).catch(() => {});
+        browser.navigate("brwsr://ntp", newTab.id, "close_all").catch(() => {});
       },
 
       closeOtherTabs: (id) => {
-        set((state) => ({
+        const state = get();
+        const prevActiveTabId = state.activeTabId;
+        set({
           tabs: state.tabs.filter((t) => t.id === id || t.isPinned),
           activeTabId: id,
-        }));
+        });
+        // If the previously active tab was removed, navigate the browser WebView
+        // to the newly active tab's URL so the WebView follows the tab state.
+        if (prevActiveTabId !== id) {
+          const tab = get().tabs.find((t) => t.id === id);
+          if (tab) {
+            browser.navigate(tab.url, id, "close_other").catch(() => {});
+          }
+        }
       },
 
       reorderTabs: (fromIndex, toIndex) => {
@@ -525,8 +548,8 @@ export const useTabStore = create<TabStore>()(
           const newTab = {
             id: Math.random().toString(36).substring(2, 9),
             title: "New Tab",
-            url: "https://www.google.com",
-            history: ["https://www.google.com"],
+            url: "brwsr://ntp",
+            history: ["brwsr://ntp"],
             historyIndex: 0,
             isLoading: false,
             canGoBack: false,

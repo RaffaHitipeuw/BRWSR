@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>New Tab</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 100%; height: 100%;
+        background: #e8e8e8;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .ntp {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        padding: 24px;
+      }
+      .ntp-search {
+        width: 100%;
+        max-width: 540px;
+        padding: 12px 16px;
+        font-size: 15px;
+        border: 1px solid #d0d0d0;
+        border-radius: 24px;
+        outline: none;
+        background: #fff;
+        color: #222;
+        box-shadow: 0 1px 6px rgba(32,33,36,0.28);
+        transition: box-shadow 0.2s;
+      }
+      .ntp-search:focus {
+        box-shadow: 0 1px 8px rgba(32,33,36,0.4);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ntp">
+      <input
+        id="search"
+        class="ntp-search"
+        type="text"
+        placeholder="Search or enter URL"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+    <script>
+      (function () {
+        "use strict";
+
+        var input = document.getElementById("search");
+        input.focus();
+
+        input.addEventListener("keydown", function (e) {
+          if (e.key !== "Enter") return;
+          var raw = input.value.trim();
+          if (!raw) return;
+
+          var targetUrl;
+          var trimmed = raw;
+
+          // 1. Explicit protocol — navigate directly
+          if (trimmed.indexOf("://") !== -1) {
+            targetUrl = trimmed;
+          }
+          // 2. Domain-like (has dot, no spaces) — add https://
+          else if (trimmed.indexOf(".") !== -1 && trimmed.indexOf(" ") === -1) {
+            targetUrl = "https://" + trimmed;
+          }
+          // 3. Everything else — search via Google
+          else {
+            targetUrl = "https://www.google.com/search?q=" + encodeURIComponent(trimmed);
+          }
+
+          // Navigate via Tauri IPC from inside the browser WebView
+          if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+            window.__TAURI__.core.invoke("navigate_browser", {
+              url: targetUrl,
+              tabId: "default",
+              navigationType: "ntp_search",
+            }).catch(function () {
+              // Fallback: window.location
+              window.location.href = targetUrl;
+            });
+          } else {
+            // Final fallback
+            window.location.href = targetUrl;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

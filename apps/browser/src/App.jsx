@@ -25,7 +25,10 @@ function App() {
 
   // Track if initial WebView creation has happened
   const webViewInitialized = useRef(false);
-  const lastNavigatedUrl = useRef(null);
+  // Track last navigated URL + tab so tab-switch navigation fires even when the
+  // target tab's URL equals the previously navigated URL (e.g. duplicate tab,
+  // or switching back to a tab that shares the same URL as the last nav).
+  const lastNavigatedTab = useRef({ url: null, tabId: null });
 
   useEffect(() => {
     if (activeTab && activeTab.url && activeTab.url.startsWith("http")) {
@@ -41,78 +44,190 @@ function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [save]);
 
-  // Navigate on tab switch only if URL is different from current WebView URL
+  // Navigate on tab switch. Always call browser.navigate when switching tabs —
+  // even if the target URL equals the last navigated URL, the WebView may be
+  // showing a different tab's content (e.g. after duplicateTab or rapid switches).
   useEffect(() => {
     if (activeTabId && activeTab && activeTab.url) {
-      // Only navigate if URL is different from last navigation
-      if (activeTab.url !== lastNavigatedUrl.current) {
-        lastNavigatedUrl.current = activeTab.url;
+      // Navigate if this is a different tab OR a different URL than last navigated.
+      const urlChanged = activeTab.url !== lastNavigatedTab.current.url;
+      const tabChanged = activeTab.id !== lastNavigatedTab.current.tabId;
+      if (urlChanged || tabChanged) {
+        lastNavigatedTab.current = { url: activeTab.url, tabId: activeTab.id };
         browser.navigate(activeTab.url, activeTabId, "tab_switch").then(() => {
-          // Inject URL tracker after tab switch navigation
           browser.injectUrlTracker().catch(() => {});
         });
       }
     }
   }, [activeTabId, activeTab]);
 
-  // Listen for events from the native overlay window (bookmark/navigate actions)
+  // ── overlay-listener: singleton per app-lifetime ──────────────────────────────────
+  // [FIX] empty deps — registered once; all handlers use useTabStore.getState() for fresh state
+  // [FIX] use `mounted` flag to prevent race-condition double-listener in React.StrictMode:
+  //   StrictMode remounts effects (mount→unmount→mount), cleanup runs before async completes,
+  //   so vars are null and unlisten() is never called. The flag prevents the setter from
+  //   running after unmount, breaking the leak.
   useEffect(() => {
     let unlistenNavigate = null;
     let unlistenBookmarkToggle = null;
+    let unlistenNewTab = null;
+    let mounted = true;  // ← guard against async race condition
 
-    async function setupListeners() {
+    (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
+
         unlistenNavigate = await listen("overlay-navigate", (event) => {
+          if (!mounted) return;
           const url = event.payload;
-          console.info("[App] overlay-navigate:", url);
-          if (activeTabId) {
-            browser.navigate(url, activeTabId, "overlay").then(() => {
-              // Inject URL tracker after overlay navigation
-              browser.injectUrlTracker().catch(() => {});
-            });
-          }
+          if (!url) return;
+          const { activeTabId } = useTabStore.getState();
+          if (!activeTabId) return;
+          browser.navigate(url, activeTabId, "overlay").then(() => {
+            browser.injectUrlTracker().catch(() => {});
+          });
         });
+
         unlistenBookmarkToggle = await listen("overlay-bookmark-toggle", () => {
-          console.info("[App] overlay-bookmark-toggle received");
+          // no-op for now
         });
-        // Listen for URL changes from injected WebView script
-        await listen("webview-url-changed", (event) => {
-          const url = event.payload;
-          if (url && typeof url === 'string' && url.startsWith('http')) {
-            const state = useTabStore.getState();
-            const { activeTabId, tabs } = state;
-            if (activeTabId) {
-              const activeTab = tabs.find(t => t.id === activeTabId);
-              if (activeTab && activeTab.url !== url) {
-                console.info("[URL-SYNC] WebView URL changed:", url);
-                state.updateTab(activeTabId, {
-                  url,
-                  title: activeTab.title,
-                  favicon: (() => {
-                    try {
-                      const hostname = new URL(url).hostname;
-                      return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
-                    } catch {
-                      return activeTab.favicon;
-                    }
-                  })(),
-                });
-              }
-            }
+
+        unlistenNewTab = await listen("overlay-new-tab", (event) => {
+          if (!mounted) return;
+          const action = event.payload?.action;
+          if (!action) return;
+          const destUrl =
+            action === "history" ? "brwsr://history" :
+            action === "downloads" ? "brwsr://downloads" : null;
+          if (!destUrl) return;
+
+          const state = useTabStore.getState();
+          const existing = state.tabs.find(t =>
+            t.url === destUrl || t.history?.includes(destUrl)
+          );
+          if (existing) {
+            state.setActiveTab(existing.id);
+            return;
           }
+
+          const newTabId = state.addTab();
+          if (!newTabId) return;
+
+          // Set the intended destination URL BEFORE setActiveTab triggers the tab-switch effect.
+          // Without this, the effect would navigate the new tab to brwsr://ntp before
+          // the intended History/Downloads navigation.
+          state.updateTab(newTabId, {
+            url: destUrl,
+            title: action === "history" ? "History" : "Downloads",
+          });
+
+          state.setActiveTab(newTabId);
+          browser.createTab(newTabId);
+          browser.navigate(destUrl, newTabId, "overlay").then(() => {
+            browser.injectUrlTracker().catch(() => {});
+          });
         });
       } catch (err) {
-        console.warn("[App] Failed to setup overlay listeners:", err);
+        console.warn("[App] overlay-listener setup failed:", err);
       }
-    }
+    })();
 
-    setupListeners();
     return () => {
+      mounted = false;  // ← stop any async setter from running after unmount
       unlistenNavigate?.();
       unlistenBookmarkToggle?.();
+      unlistenNewTab?.();
     };
-  }, [activeTabId]);
+  }, []);  // ──────────────────────────────────────────────────────────────────────────────
+
+  // ── URL-change listener: singleton, reads fresh Zustand state ─────────────────────────
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen("webview-url-changed", (event) => {
+          const url = event.payload;
+          if (!url || typeof url !== "string" || (!url.startsWith("http") && !url.startsWith("brwsr://"))) return;
+
+          // Map physical localhost resource URLs back to logical brwsr:// URLs.
+          // This decouples the physical WebView URL (dev server origin) from the logical
+          // browser tab URL, allowing shared localStorage while preserving the browser's
+          // logical URL state.
+          let logicalUrl = url;
+          if (url === "http://localhost:1421/src/history.html") {
+            logicalUrl = "brwsr://history";
+          } else if (url === "http://localhost:1421/src/downloads.html") {
+            logicalUrl = "brwsr://downloads";
+          }
+
+          const state = useTabStore.getState();
+          const { activeTabId, tabs } = state;
+          if (!activeTabId) return;
+          const tab = tabs.find(t => t.id === activeTabId);
+          if (!tab || tab.url === logicalUrl) return;
+
+          // Check if URL is already in history (back/forward navigation via native WebView)
+          const existingIdx = tab.history.indexOf(logicalUrl);
+
+          let updates = {
+            url: logicalUrl,
+            isLoading: false,
+            favicon: (() => {
+              try {
+                return `https://www.google.com/s2/favicons?domain=${new URL(logicalUrl).hostname}&sz=32`;
+              } catch { return tab.favicon; }
+            })(),
+          };
+
+          if (existingIdx !== -1) {
+            // Native back/forward: sync historyIndex to where we actually are
+            updates.historyIndex = existingIdx;
+            updates.canGoBack = existingIdx > 0;
+            updates.canGoForward = existingIdx < tab.history.length - 1;
+          } else {
+            // New navigation from WebView (e.g. clicking a link): treat as new forward nav
+            const newHistory = [...tab.history.slice(0, tab.historyIndex + 1), logicalUrl];
+            updates.history = newHistory;
+            updates.historyIndex = newHistory.length - 1;
+            updates.canGoBack = true;
+            updates.canGoForward = false;
+          }
+
+          state.updateTab(activeTabId, updates);
+        });
+      } catch (err) {
+        console.warn("[App] webview-url-changed listener failed:", err);
+      }
+    })();
+    return () => { unlisten?.(); };
+  }, []);  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── history-navigate listener: tab switch to history page items ───────────────────
+  // Listens for clicks on history items inside the browser WebView.
+  // Navigates the current (active) tab to the clicked URL without creating a new tab.
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+
+        unlisten = await listen("history-navigate", (event) => {
+          const url = event.payload;
+          if (!url || typeof url !== "string") return;
+          const state = useTabStore.getState();
+          const { activeTabId } = state;
+          if (!activeTabId) return;
+          browser.navigate(url, activeTabId, "history-item").then(() => {
+            browser.injectUrlTracker().catch(() => {});
+          });
+        });
+      } catch (err) {
+        console.warn("[App] history-navigate listener failed:", err);
+      }
+    })();
+    return () => { unlisten?.(); };
+  }, []);  // ──────────────────────────────────────────────────────────────────────────
 
   const handleTabClick = useCallback(
     (tabId) => {
@@ -152,8 +267,26 @@ function App() {
       removeTab(tabId);
 
       const newActiveTab = useTabStore.getState().getActiveTab();
-      if (newActiveTab && wasActive) {
-        browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch");
+
+      if (wasActive) {
+        // Always navigate after closing the active tab, even when closing the last
+        // tab (getActiveTab() returns undefined — create a replacement NTP tab).
+        if (!newActiveTab) {
+          const replacementId = useTabStore.getState().addTab();
+          browser.createTab(replacementId).catch(() => {});
+          // Update the nav-ref BEFORE the tab-switch effect runs so the effect
+          // sees consistent state and does not double-navigate.
+          lastNavigatedTab.current = { url: "brwsr://ntp", tabId: replacementId };
+          browser.navigate("brwsr://ntp", replacementId, "tab_switch").then(() => {
+            browser.injectUrlTracker().catch(() => {});
+          });
+        } else {
+          // Navigate to the new active tab's URL (tab-switch effect would normally
+          // handle this, but we call it directly so the navigate is guaranteed).
+          browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch").then(() => {
+            browser.injectUrlTracker().catch(() => {});
+          });
+        }
       }
     },
     [removeTab],
