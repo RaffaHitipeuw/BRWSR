@@ -1,6 +1,6 @@
 [package]
 name = "eduos-browser"
-version = "0.1.1"
+version = "0.1.2"
 description = "EduOS Browser - Native WebView Browser"
 edition = "2021"
 

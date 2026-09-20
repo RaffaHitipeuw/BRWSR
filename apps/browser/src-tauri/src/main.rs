@@ -5853,7 +5853,7 @@ fn main() {
                 "main",
                 WebviewUrl::App("index.html".into()),
             )
-            .title("EduOS Browser")
+            .title("Mesh")
             .inner_size(1280.0, 800.0)
             .min_inner_size(960.0, 600.0)
             .center()

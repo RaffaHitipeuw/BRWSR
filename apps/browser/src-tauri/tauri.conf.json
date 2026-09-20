@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "EduOS Browser",
-  "version": "0.1.1",
+  "productName": "Mesh",
+  "version": "0.1.2",
   "identifier": "id.eduos.browser",
   "build": {
     "devUrl": "http://localhost:1421",
@@ -20,13 +20,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": ["icons/icon-0.1.2.ico"],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
