@@ -778,9 +778,16 @@ impl Default for WebViewState {
 struct WebViewLifecycle {
     state: Mutex<WebViewState>,
     last_activity: Mutex<Instant>,
-    idle_threshold_secs: Mutex<u64>,  
-    last_url: Mutex<Option<String>>, 
-    last_tab_id: Mutex<Option<String>>, 
+    idle_threshold_secs: Mutex<u64>,
+    last_url: Mutex<Option<String>>,
+    last_tab_id: Mutex<Option<String>>,
+    /// Pending navigation: url → sequence number. Validated in webview_url_update to reject
+    /// stale events from superseded navigations.
+    pending_nav: Mutex<HashMap<String, u64>>,
+    /// Global pending sequence counter. Incremented on each navigation request.
+    /// The value at the time of navigation request is stored and returned via
+    /// webview_url_update so the frontend can reject stale events.
+    pending_seq: Mutex<u64>,
 }
 
 impl Default for WebViewLifecycle {
@@ -788,9 +795,11 @@ impl Default for WebViewLifecycle {
         Self {
             state: Mutex::new(WebViewState::Uninitialized),
             last_activity: Mutex::new(Instant::now()),
-            idle_threshold_secs: Mutex::new(300), 
+            idle_threshold_secs: Mutex::new(300),
             last_url: Mutex::new(None),
             last_tab_id: Mutex::new(None),
+            pending_nav: Mutex::new(HashMap::new()),
+            pending_seq: Mutex::new(0),
         }
     }
 }
@@ -832,8 +841,43 @@ impl WebViewLifecycle {
         *self.last_tab_id.lock().unwrap() = Some(tab_id.to_string());
     }
 
+    /// Record a pending navigation URL with its sequence number.
+    /// webview_url_update checks this to reject stale completions.
+    /// Overwrites any prior pending navigation for the same URL (newer supersedes older).
+    fn record_pending_navigation(&self, url: &str) -> u64 {
+        let mut pending = self.pending_nav.lock().unwrap();
+        let next_seq = pending.len() as u64 + 1;
+        pending.insert(url.to_string(), next_seq);
+        next_seq
+    }
+
+    /// Validate and consume a webview_url_update event's pending sequence.
+    /// Returns Some(seq) if the event is the latest for this URL (emit it).
+    /// Returns None if the event is stale (a newer navigation has superseded it — ignore).
+    fn validate_nav_event(&self, url: &str) -> Option<u64> {
+        let mut pending = self.pending_nav.lock().unwrap();
+        match pending.remove(url) {
+            Some(seq) => Some(seq),  // consume so subsequent stale events are rejected
+            None => None,            // no pending nav — emit with seq=0 (frontend should also ignore if it has newer pending)
+        }
+    }
+
     fn set_idle_threshold(&self, seconds: u64) {
         *self.idle_threshold_secs.lock().unwrap() = seconds;
+    }
+
+    /// Advance the global pending sequence counter and return the new value.
+    /// Called at the start of each navigation request.
+    fn advance_pending_sequence(&self) -> u64 {
+        let mut seq = self.pending_seq.lock().unwrap();
+        *seq += 1;
+        *seq
+    }
+
+    /// Get the current pending sequence number.
+    /// Called when webview_url_update fires to include in the event.
+    fn get_pending_sequence(&self) -> u64 {
+        *self.pending_seq.lock().unwrap()
     }
 }
 
@@ -2267,6 +2311,12 @@ async fn navigate_browser(
     // ─────────────────────────────────────────────────────────────────────────────
 
     let lifecycle = app.state::<WebViewLifecycle>();
+
+    // Monotonically increasing sequence number for navigation ordering.
+    // webview_url_update validates this to reject superseded/stale navigation completions.
+    let nav_sequence = lifecycle.advance_pending_sequence();
+    log::info!("[NAVIGATE] nav_sequence={} url={} tab={}", nav_sequence, url, tabId);
+
     let browser_state = app.state::<BrowserWebview>();
 
     let main_window = app.get_window("main").ok_or("Main window not found")?;
@@ -2531,6 +2581,7 @@ async fn navigate_browser(
             "url={} tab={}", target_url, tabId
         ));
         let url_for_log = target_url.clone();
+        lifecycle.record_pending_navigation(&url);
         webview.navigate(target_url)
             .map_err(|e: tauri::Error| {
                 let msg = format!("{}", e);
@@ -2743,16 +2794,28 @@ pub fn install_url_tracker_on_webview(browser_webview: &tauri::Webview, app: &ta
     }
 }
 
+/// Payload emitted with webview-url-changed events. Includes the navigation sequence number
+/// so the frontend can reject stale events from superseded navigations.
+#[derive(Clone, serde::Serialize)]
+struct WebviewUrlEvent {
+    url: String,
+    #[serde(rename = "navSeq")]
+    nav_seq: u64,
+}
+
 #[tauri::command]
 fn webview_url_update(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    // Diagnostic: log every URL received from the injected tracker.
-    // If SODAR appears here, it means the tracker ran inside an iframe (bug).
-    // With the fix, only top-level window.location.href reaches here.
     log::info!("[WEBVIEW-NAV] URI={}", url);
-    log::info!("[URL-TRACKER] URL updated: {}", url);
-    // Emit event to frontend so it can update the address bar
+
+    // Retrieve and clear the pending navigation sequence so stale events are rejected.
+    let lifecycle = app.state::<WebViewLifecycle>();
+    let nav_seq = lifecycle.get_pending_sequence();
+    log::info!("[WEBVIEW-NAV] nav_seq={} url={}", nav_seq, url);
+
+    // Emit with navigation sequence so stale navigations can be detected.
     use tauri::Emitter;
-    app.emit("webview-url-changed", &url)
+    let payload = WebviewUrlEvent { url, nav_seq };
+    app.emit("webview-url-changed", &payload)
         .map_err(|e| format!("emit failed: {}", e))?;
     Ok(())
 }

@@ -1,11 +1,11 @@
 {
-  "version": "0.1.0",
-  "notes": "EduOS Browser 0.1.0",
-  "pub_date": "2026-09-20T00:00:00Z",
+  "version": "0.1.5",
+  "notes": "Mesh Beta v0.1.5",
+  "pub_date": "2026-09-21T00:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUR3h2anBLaWc4a2ZTUWFGZjVFUG1lMEh4Zll0aklQSThYR0RLamZGZmRFaGdQVmNGYnpva1hraHFZbjk0SDRwMlFoRldEbGNuOEhzN3YvUG5LcFYxQzJiNlNkUS9oRnd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5ODg4NjE4CWZpbGU6RWR1T1MgQnJvd3Nlcl8wLjEuMF94NjRfZW4tVVMubXNpCkFMZ2lyY0tkSDhvL0VxNVZsYVAvUitiWHlFaTBRNGtTczdLQTh6eTd4SlRSZHZ6RTk5UGpsb3UyMFdmN3ZHckRoa1ZKRVJDT09sV0hGUEo5THc1aUJ3PT0K",
-      "url": "https://github.com/RaffaHitipeuw/BRWSR/releases/download/v0.1.0/EduOS.Browser_0.1.0_x64_en-US.msi"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUR3h2anBLaWc4a2JKZG11MGRUc1g2dDNpbUN4OHVJTFVyYThIT3lNOW1UK2YwRHl1TUcycmZabktFdDNaYVZ4Z1lKdmpMVjEzbEJVWG5VaktJeTZjT1NBS09EVG05T0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTcwODQ5CWZpbGU6TWVzaCBCZXRhXzAuMS41X3g2NF9lbi1VUy5tc2kKU01iazdEZ3FIQ2lvTkpxUEV5TExQaHVjYnNQR2c2ZTg1MFh5RUJhRDZZRFIwZ2hNQ29STTVEM09SSjFVVEVhKzY2OXhFZ1JhK3RWRCtvT1ova3BkQ2c9PQo=",
+      "url": "https://github.com/RaffaHitipeuw/BRWSR/releases/download/v0.1.5/Mesh%20Beta_0.1.5_x64_en-US.msi"
     }
   }
 }

@@ -10,6 +10,11 @@ import { useSession } from "./hooks/useSession";
 import { useHistoryStore } from "./stores/history";
 import { StudentShareButton } from "./components/StudentShareButton";
 
+// Navigation sequencing: tracks in-flight browser navigations for race detection.
+// Each call to browser.navigate() bumps pendingSeq[tabId]. The backend emits the seq back via
+// webview-url-changed so the listener can validate that the event belongs to the latest pending navigation.
+const pendingSeq = {};  // tabId → seq (the seq we sent to the backend)
+
 function App() {
   const activeTabId = useTabStore((s) => s.activeTabId);
   const setActiveTab = useTabStore((s) => s.setActiveTab);
@@ -29,6 +34,9 @@ function App() {
   // target tab's URL equals the previously navigated URL (e.g. duplicate tab,
   // or switching back to a tab that shares the same URL as the last nav).
   const lastNavigatedTab = useRef({ url: null, tabId: null });
+  // Track which tab was queued for navigation at the moment of the async call.
+  // Used to detect superseded navigations under rapid tab switching (race guard).
+  const navigationTargetTab = useRef(null);
 
   useEffect(() => {
     if (activeTab && activeTab.url && activeTab.url.startsWith("http")) {
@@ -113,6 +121,11 @@ function App() {
       const tabChanged = activeTab.id !== lastNavigatedTab.current.tabId;
       if (urlChanged || tabChanged) {
         lastNavigatedTab.current = { url: activeTab.url, tabId: activeTab.id };
+        // Track for sequence validation — prevents stale tab-switch events from overwriting.
+        pendingSeq[activeTabId] = (pendingSeq[activeTabId] ?? 0) + 1;
+        // Record the target tabId at call time — used as a race guard in the
+        // webview-url-changed listener to detect superseded navigations.
+        navigationTargetTab.current = activeTabId;
         browser.navigate(activeTab.url, activeTabId, "tab_switch").then(() => {
           browser.injectUrlTracker().catch(() => {});
         });
@@ -142,6 +155,8 @@ function App() {
           if (!url) return;
           const { activeTabId } = useTabStore.getState();
           if (!activeTabId) return;
+          // Track for sequence validation.
+          pendingSeq[activeTabId] = (pendingSeq[activeTabId] ?? 0) + 1;
           browser.navigate(url, activeTabId, "overlay").then(() => {
             browser.injectUrlTracker().catch(() => {});
           });
@@ -182,6 +197,8 @@ function App() {
 
           state.setActiveTab(newTabId);
           browser.createTab(newTabId);
+          // Track for sequence validation.
+          pendingSeq[newTabId] = 1;
           browser.navigate(destUrl, newTabId, "overlay").then(() => {
             browser.injectUrlTracker().catch(() => {});
           });
@@ -206,8 +223,13 @@ function App() {
       try {
         const { listen } = await import("@tauri-apps/api/event");
         unlisten = await listen("webview-url-changed", (event) => {
-          const url = event.payload;
-          if (!url || typeof url !== "string" || (!url.startsWith("http") && !url.startsWith("brwsr://"))) return;
+          // Backend emits { url, navSeq } — read as object, not plain string
+          const payload = event.payload;
+          if (!payload || typeof payload !== 'object') return;
+          const url = payload.url || payload;
+          const eventSeq = payload.navSeq ?? 0;
+
+          if (!url || typeof url !== 'string' || (!url.startsWith("http") && !url.startsWith("brwsr://"))) return;
 
           // Map physical localhost resource URLs back to logical brwsr:// URLs.
           // This decouples the physical WebView URL (dev server origin) from the logical
@@ -225,6 +247,23 @@ function App() {
           if (!activeTabId) return;
           const tab = tabs.find(t => t.id === activeTabId);
           if (!tab || tab.url === logicalUrl) return;
+
+          // RACE GUARD: if navigationTargetTab.current differs from activeTabId, a newer
+          // tab switch has already queued a different navigation and this event's content
+          // is stale. Re-navigate to the active tab's URL so the WebView catches up.
+          if (navigationTargetTab.current !== activeTabId) {
+            browser.navigate(tab.url, activeTabId, "tab_switch").catch(() => {});
+            return;
+          }
+
+          // SEQUENCE VALIDATION: Reject events whose seq <= the pending seq we last sent.
+          // This prevents stale navigations from overwriting newer ones when navigating rapidly
+          // on the same tab (e.g., localhost → Google → localhost → NTP).
+          const pending = pendingSeq[activeTabId] ?? 0;
+          if (eventSeq <= pending) {
+            // Event is from an older navigation — ignore it
+            return;
+          }
 
           // Check if URL is already in history (back/forward navigation via native WebView)
           const existingIdx = tab.history.indexOf(logicalUrl);
@@ -277,6 +316,8 @@ function App() {
           const state = useTabStore.getState();
           const { activeTabId } = state;
           if (!activeTabId) return;
+          // Track for sequence validation.
+          pendingSeq[activeTabId] = (pendingSeq[activeTabId] ?? 0) + 1;
           browser.navigate(url, activeTabId, "history-item").then(() => {
             browser.injectUrlTracker().catch(() => {});
           });
@@ -336,12 +377,16 @@ function App() {
           // Update the nav-ref BEFORE the tab-switch effect runs so the effect
           // sees consistent state and does not double-navigate.
           lastNavigatedTab.current = { url: "brwsr://ntp", tabId: replacementId };
+          // Track for sequence validation.
+          pendingSeq[replacementId] = 1;
           browser.navigate("brwsr://ntp", replacementId, "tab_switch").then(() => {
             browser.injectUrlTracker().catch(() => {});
           });
         } else {
           // Navigate to the new active tab's URL (tab-switch effect would normally
           // handle this, but we call it directly so the navigate is guaranteed).
+          // Track for sequence validation.
+          pendingSeq[newActiveTab.id] = (pendingSeq[newActiveTab.id] ?? 0) + 1;
           browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch").then(() => {
             browser.injectUrlTracker().catch(() => {});
           });
@@ -354,6 +399,9 @@ function App() {
   const handleNavigate = useCallback(
     (tabId, url) => {
       navigate(tabId, url);
+      // Track this navigation for sequence validation — prevents stale events from overwriting.
+      pendingSeq[tabId] = (pendingSeq[tabId] ?? 0) + 1;
+      navigationTargetTab.current = tabId;
       browser.navigate(url, tabId, "typed_url").then(() => {
         browser.injectUrlTracker().catch(() => {});
       });
@@ -362,6 +410,8 @@ function App() {
   );
 
   const handleReload = useCallback(() => {
+    const { activeTabId } = useTabStore.getState();
+    if (activeTabId) navigationTargetTab.current = activeTabId;
     browser.reload().then(() => {
       browser.injectUrlTracker().catch(() => {});
     });
@@ -369,6 +419,7 @@ function App() {
 
   const handleBack = useCallback(() => {
     const { activeTabId } = useTabStore.getState();
+    if (activeTabId) navigationTargetTab.current = activeTabId;
     if (activeTabId) {
       useTabStore.getState().goBack(activeTabId);
     }
@@ -379,6 +430,7 @@ function App() {
 
   const handleForward = useCallback(() => {
     const { activeTabId } = useTabStore.getState();
+    if (activeTabId) navigationTargetTab.current = activeTabId;
     if (activeTabId) {
       useTabStore.getState().goForward(activeTabId);
     }
