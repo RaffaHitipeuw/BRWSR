@@ -126,9 +126,7 @@ function App() {
         // Record the target tabId at call time — used as a race guard in the
         // webview-url-changed listener to detect superseded navigations.
         navigationTargetTab.current = activeTabId;
-        browser.navigate(activeTab.url, activeTabId, "tab_switch").then(() => {
-          browser.injectUrlTracker().catch(() => {});
-        });
+        browser.navigate(activeTab.url, activeTabId, "tab_switch");
       }
     }
   }, [activeTabId, activeTab]);
@@ -157,9 +155,7 @@ function App() {
           if (!activeTabId) return;
           // Track for sequence validation.
           pendingSeq[activeTabId] = (pendingSeq[activeTabId] ?? 0) + 1;
-          browser.navigate(url, activeTabId, "overlay").then(() => {
-            browser.injectUrlTracker().catch(() => {});
-          });
+          browser.navigate(url, activeTabId, "overlay");
         });
 
         unlistenBookmarkToggle = await listen("overlay-bookmark-toggle", () => {
@@ -199,9 +195,7 @@ function App() {
           browser.createTab(newTabId);
           // Track for sequence validation.
           pendingSeq[newTabId] = 1;
-          browser.navigate(destUrl, newTabId, "overlay").then(() => {
-            browser.injectUrlTracker().catch(() => {});
-          });
+          browser.navigate(destUrl, newTabId, "overlay");
         });
       } catch (err) {
         console.warn("[App] overlay-listener setup failed:", err);
@@ -256,14 +250,16 @@ function App() {
             return;
           }
 
-          // SEQUENCE VALIDATION: Reject events whose seq <= the pending seq we last sent.
+          // SEQUENCE VALIDATION: Only process events that advance past what we've already committed.
           // This prevents stale navigations from overwriting newer ones when navigating rapidly
-          // on the same tab (e.g., localhost → Google → localhost → NTP).
+          // on the same tab (e.g., History → Downloads → History).
           const pending = pendingSeq[activeTabId] ?? 0;
           if (eventSeq <= pending) {
-            // Event is from an older navigation — ignore it
+            // Event is from an older or duplicate navigation — ignore it
             return;
           }
+          // Advance our committed sequence to match this event
+          pendingSeq[activeTabId] = eventSeq;
 
           // Check if URL is already in history (back/forward navigation via native WebView)
           const existingIdx = tab.history.indexOf(logicalUrl);
@@ -318,9 +314,7 @@ function App() {
           if (!activeTabId) return;
           // Track for sequence validation.
           pendingSeq[activeTabId] = (pendingSeq[activeTabId] ?? 0) + 1;
-          browser.navigate(url, activeTabId, "history-item").then(() => {
-            browser.injectUrlTracker().catch(() => {});
-          });
+          browser.navigate(url, activeTabId, "history-item");
         });
       } catch (err) {
         console.warn("[App] history-navigate listener failed:", err);
@@ -379,17 +373,13 @@ function App() {
           lastNavigatedTab.current = { url: "brwsr://ntp", tabId: replacementId };
           // Track for sequence validation.
           pendingSeq[replacementId] = 1;
-          browser.navigate("brwsr://ntp", replacementId, "tab_switch").then(() => {
-            browser.injectUrlTracker().catch(() => {});
-          });
+          browser.navigate("brwsr://ntp", replacementId, "tab_switch");
         } else {
           // Navigate to the new active tab's URL (tab-switch effect would normally
           // handle this, but we call it directly so the navigate is guaranteed).
           // Track for sequence validation.
           pendingSeq[newActiveTab.id] = (pendingSeq[newActiveTab.id] ?? 0) + 1;
-          browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch").then(() => {
-            browser.injectUrlTracker().catch(() => {});
-          });
+          browser.navigate(newActiveTab.url, newActiveTab.id, "tab_switch");
         }
       }
     },
@@ -402,9 +392,7 @@ function App() {
       // Track this navigation for sequence validation — prevents stale events from overwriting.
       pendingSeq[tabId] = (pendingSeq[tabId] ?? 0) + 1;
       navigationTargetTab.current = tabId;
-      browser.navigate(url, tabId, "typed_url").then(() => {
-        browser.injectUrlTracker().catch(() => {});
-      });
+      browser.navigate(url, tabId, "typed_url");
     },
     [navigate],
   );
@@ -412,9 +400,7 @@ function App() {
   const handleReload = useCallback(() => {
     const { activeTabId } = useTabStore.getState();
     if (activeTabId) navigationTargetTab.current = activeTabId;
-    browser.reload().then(() => {
-      browser.injectUrlTracker().catch(() => {});
-    });
+    browser.reload();
   }, []);
 
   const handleBack = useCallback(() => {
@@ -423,9 +409,7 @@ function App() {
     if (activeTabId) {
       useTabStore.getState().goBack(activeTabId);
     }
-    browser.back().then(() => {
-      browser.injectUrlTracker().catch(() => {});
-    });
+    browser.back();
   }, []);
 
   const handleForward = useCallback(() => {
@@ -434,9 +418,7 @@ function App() {
     if (activeTabId) {
       useTabStore.getState().goForward(activeTabId);
     }
-    browser.forward().then(() => {
-      browser.injectUrlTracker().catch(() => {});
-    });
+    browser.forward();
   }, []);
 
   useKeyboardShortcuts({

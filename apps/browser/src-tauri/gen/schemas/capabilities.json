@@ -47,7 +47,8 @@
       "allow-get-webview-state",
       "allow-webview-url-update",
       "allow-emit-history-navigate",
-      "allow-create-tab"
+      "allow-create-tab",
+      "updater:default"
     ]
   }
 }

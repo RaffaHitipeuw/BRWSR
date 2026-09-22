@@ -83,9 +83,9 @@ export function NavigationBar({
   const tabs = useTabStore((s) => s.tabs);
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
-  // Sync input with active tab URL
+  // Sync input with active tab URL — but only if input is NOT focused (user is typing)
   useEffect(() => {
-    if (activeTab?.url && !inputRef.current?.focused) {
+    if (activeTab?.url && document.activeElement !== inputRef.current) {
       setUrlInput(activeTab.url);
     }
   }, [activeTab?.url]);
@@ -249,6 +249,10 @@ export function NavigationBar({
                 onChange={(e) => setUrlInput(e.target.value)}
                 onFocus={handleInputFocus}
                 placeholder="Search or enter URL"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
                 className="flex-1 text-sm text-gray-800 bg-transparent outline-none"
               />
               {activeTab?.isLoading && (

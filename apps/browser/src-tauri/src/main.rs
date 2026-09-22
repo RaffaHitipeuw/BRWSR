@@ -1806,17 +1806,23 @@ fn handle_cbt_signal(event: String, window: tauri::Window, app: tauri::AppHandle
         let cbt_state = app.state::<CbtState>();
         *cbt_state.phase.lock().unwrap() = CbtPhase::Active;
 
-        // ── [SUNTIK ELEVASI ADMIN SAKLAR MATI WI-FI] ───────────────────
+        // ── [SUNTIK FINALE: SAKLAR MATI WI-FI ASINKRONUS PRIVILEGE ELEVATION 0-DELAY] ──
         #[cfg(target_os = "windows")]
         {
-            println!("[CBT][AUTOMATION] Forcefully elevating privileges to drop WiFi adapter...");
+            use std::os::windows::process::CommandExt;
+            println!("[CBT][AUTOMATION] Spawning async elevated process to sever physical WiFi link...");
+            
+            // Menggunakan .spawn() + CREATE_NO_WINDOW (0x08000000) agar perintah dikirim langsung 
+            // ke latar belakang Windows tanpa menunggu proses selesai (.output()) dan tanpa kedipan layar hitam!
             let _ = std::process::Command::new("powershell")
                 .args(&[
                     "-ExecutionPolicy", "Bypass", "-Command", 
-                    "Start-Process powershell -ArgumentList '-Command Disable-NetAdapter -Name WiFi,WiFi* -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
+                    "Start-Process powershell -ArgumentList '-Command Disable-NetAdapter -Name WiFi -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
                 ])
-                .output();
-            println!("[CBT][AUTOMATION] Elevated Wi-Fi disable command dispatched to OS loop.");
+                .creation_flags(0x08000000)
+                .spawn();
+                
+            println!("[CBT][AUTOMATION] WiFi link severance dispatched to background thread.");
         }
         // ───────────────────────────────────────────────────────────────────
 
@@ -1850,17 +1856,22 @@ fn handle_cbt_signal(event: String, window: tauri::Window, app: tauri::AppHandle
         let cbt_state = app.state::<CbtState>();
         *cbt_state.phase.lock().unwrap() = CbtPhase::Idle;
 
-        // ── [SUNTIK ELEVASI ADMIN SAKLAR HIDUPKAN WI-FI SEMPURNA] ──────────────
+        // ── [SUNTIK FINALE: SAKLAR HIDUPKAN WI-FI ASINKRONUS PRIVILEGE ELEVATION 0-DELAY] ──
         #[cfg(target_os = "windows")]
         {
-            println!("[CBT][AUTOMATION] Forcefully elevating privileges to restore WiFi adapter...");
+            use std::os::windows::process::CommandExt;
+            println!("[CBT][AUTOMATION] Spawning async elevated process to restore physical WiFi link...");
+            
+            // Langsung ditembak di milidetik yang sama lewat background spawn murni secepat kilat!
             let _ = std::process::Command::new("powershell")
                 .args(&[
                     "-ExecutionPolicy", "Bypass", "-Command", 
-                    "Start-Process powershell -ArgumentList '-Command Enable-NetAdapter -Name WiFi,WiFi* -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
+                    "Start-Process powershell -ArgumentList '-Command Enable-NetAdapter -Name WiFi -Confirm:$false' -Verb RunAs -WindowStyle Hidden"
                 ])
-                .output();
-            println!("[CBT][AUTOMATION] Elevated Wi-Fi enable command dispatched to OS loop.");
+                .creation_flags(0x08000000)
+                .spawn();
+                
+            println!("[CBT][AUTOMATION] WiFi link restoration dispatched to background thread.");
         }
         // ───────────────────────────────────────────────────────────────────
 
@@ -1876,6 +1887,7 @@ fn handle_cbt_signal(event: String, window: tauri::Window, app: tauri::AppHandle
 
     Ok(())
 }
+
 
 
 #[tauri::command]
@@ -2419,9 +2431,18 @@ async fn navigate_browser(
 
             true
         } else {
-            // Update bounds in case the main window was resized since last creation.
-            if let Err(e) = browser_wv.as_ref().unwrap().set_bounds(browser_bounds) {
-                log::warn!("Failed to update browser bounds: {}", e);
+            // Only update bounds if they actually changed (avoid expensive WebView2 resize).
+            if let Some(wv) = browser_wv.as_ref() {
+                let current_bounds = wv.bounds().ok();
+                let needs_update = match current_bounds {
+                    Some(ref cb) => cb.position != browser_bounds.position || cb.size != browser_bounds.size,
+                    None => true,
+                };
+                if needs_update {
+                    if let Err(e) = wv.set_bounds(browser_bounds) {
+                        log::warn!("Failed to update browser bounds: {}", e);
+                    }
+                }
             }
             false
         }
@@ -2518,6 +2539,8 @@ async fn navigate_browser(
     if is_internal_dev || is_internal_prod {
         if let Some(ref webview) = *browser_state.webview.lock().unwrap() {
             forensic::log_event(main_hwnd.0 as isize, "NAVIGATE_INTERNAL", &url);
+            // Record pending navigation for sequence validation — prevents stale events.
+            lifecycle.record_pending_navigation(&url);
             match url.as_str() {
                 "brwsr://ntp" => {
                     // NTP is a minimal placeholder — embed as data URL (production only)
@@ -5910,7 +5933,7 @@ fn main() {
             p.phase_start("setup_tauri_complete");
 
             
-            p.phase_start("window_builder_create");
+	            p.phase_start("window_builder_create");
             let main_window = WebviewWindowBuilder::new(
                 &handle,
                 "main",
@@ -5923,7 +5946,9 @@ fn main() {
             .resizable(true)
             .decorations(false)
             .visible(true)
-            .focused(true);
+            .focused(true)
+            // Disable Tauri's native drag-drop handler so HTML5 drag-and-drop APIs work in the React frontend
+            .disable_drag_drop_handler();
             p.phase_end("window_builder_create", Some("builder created"));
 
             p.phase_start("window_build");
@@ -5954,9 +5979,14 @@ fn main() {
                         let _ = wv.close();
                     };
                 }
-                // On main window gaining focus: ensure React UI stays above browser.
+                // On main window gaining focus: ensure React UI stays above browser
+                // and restore keyboard focus so the React UI (search bar) receives input.
                 tauri::WindowEvent::Focused(true) => {
                     ensure_react_ui_above_browser(&main_window_for_zorder.as_ref().window());
+                    // Restore keyboard focus to React WRY (the main window's webview).
+                    if let Some(react_wry) = handle.get_webview_window("main") {
+                        let _ = react_wry.set_focus();
+                    }
                 }
                 // On window resize/maximize/restore: synchronize browser WebView bounds.
                 tauri::WindowEvent::Resized(_) => {

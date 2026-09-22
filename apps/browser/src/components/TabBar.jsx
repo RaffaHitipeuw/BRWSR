@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { clsx } from "clsx";
 import { useTabStore } from "../stores/tabs";
 import { browserCommands } from "./browserCommands";
@@ -21,6 +21,9 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
     null,
   );
   const [draggedTabId, setDraggedTabId] = useState(null);
+  const [dragOverTabId, setDragOverTabId] = useState(null);
+  // Use ref for drag tracking - updates synchronously, unlike state which is batched
+  const draggingTabIdRef = useRef(null);
 
   const handleMinimize = () => browserCommands.minimize();
   const handleMaximize = () => browserCommands.toggleMaximize();
@@ -29,7 +32,33 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
     document.addEventListener("click", handleClick);
-    return () => document.removeEventListener("click", handleClick);
+
+    // Document-level drag diagnostics to catch ALL drag events
+    const onDocDragEnter = (e) => {
+      console.log(`[TAB-DRAG-DOC] document dragenter target=${e.target?.className || e.target?.tagName} relatedTarget=${e.relatedTarget?.className || e.relatedTarget?.tagName}`);
+    };
+    const onDocDragOver = (e) => {
+      console.log(`[TAB-DRAG-DOC] document dragover target=${e.target?.className || e.target?.tagName}`);
+    };
+    const onDocDrop = (e) => {
+      console.log(`[TAB-DRAG-DOC] document drop target=${e.target?.className || e.target?.tagName}`);
+    };
+    const onDocDragLeave = (e) => {
+      console.log(`[TAB-DRAG-DOC] document dragleave target=${e.target?.className || e.target?.tagName} relatedTarget=${e.relatedTarget?.className || e.relatedTarget?.tagName}`);
+    };
+
+    document.addEventListener("dragenter", onDocDragEnter);
+    document.addEventListener("dragover", onDocDragOver);
+    document.addEventListener("drop", onDocDrop);
+    document.addEventListener("dragleave", onDocDragLeave);
+
+    return () => {
+      document.removeEventListener("click", handleClick);
+      document.removeEventListener("dragenter", onDocDragEnter);
+      document.removeEventListener("dragover", onDocDragOver);
+      document.removeEventListener("drop", onDocDrop);
+      document.removeEventListener("dragleave", onDocDragLeave);
+    };
   }, []);
 
   const handleContextMenu = (e, tabId) => {
@@ -39,27 +68,68 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   };
 
   const handleDragStart = (e, tabId) => {
-    e.stopPropagation();
+    // Don't call stopPropagation here - drag events need to bubble for the browser
+    // to properly recognize drop targets and show the correct cursor
+    console.log(`[TAB-DRAG] dragstart tabId=${tabId} target=${e.target?.className} currentTarget=${e.currentTarget?.className} effectAllowed=${e.dataTransfer.effectAllowed} dropEffect=${e.dataTransfer.dropEffect}`);
     setDraggedTabId(tabId);
+    draggingTabIdRef.current = tabId;
     e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", tabId);
+    console.log(`[TAB-DRAG] dragstart AFTER SET tabId=${tabId} ref=${draggingTabIdRef.current}`);
   };
 
-  const handleDragOver = (e) => {
+  const handleDragEnter = (e, tabId) => {
+    console.log(`[TAB-DRAG] dragenter tabId=${tabId} target=${e.target?.className} currentTarget=${e.currentTarget?.className} ref=${draggingTabIdRef.current}`);
+  };
+
+  const handleDragEnd = () => {
+    console.log(`[TAB-DRAG] dragend ref=${draggingTabIdRef.current}`);
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+    draggingTabIdRef.current = null;
+  };
+
+  const handleDragOver = (e, tabId) => {
+    console.log(`[TAB-DRAG] dragover tabId=${tabId} target=${e.target?.className} currentTarget=${e.currentTarget?.className} ref=${draggingTabIdRef.current} effectAllowed=${e.dataTransfer.effectAllowed} dropEffect=${e.dataTransfer.dropEffect}`);
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
+    if (tabId !== draggingTabIdRef.current) {
+      setDragOverTabId(tabId);
+    }
+  };
+
+  const handleDragLeave = (e, tabId) => {
+    console.log(`[TAB-DRAG] dragleave tabId=${tabId} target=${e.target?.className} currentTarget=${e.currentTarget?.className}`);
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setDragOverTabId(null);
+    }
   };
 
   const handleDrop = (e, targetTabId) => {
+    console.log(`[TAB-DRAG] drop targetTabId=${targetTabId} ref=${draggingTabIdRef.current} effectAllowed=${e.dataTransfer.effectAllowed} dropEffect=${e.dataTransfer.dropEffect}`);
     e.preventDefault();
-    if (!draggedTabId || draggedTabId === targetTabId) return;
+    e.stopPropagation();
+    const currentDraggedId = draggingTabIdRef.current;
+    console.log(`[TAB-DRAG] drop AFTER READ ref=${currentDraggedId}`);
+    if (!currentDraggedId || currentDraggedId === targetTabId) {
+      console.log(`[TAB-DRAG] drop CANCELLED currentDraggedId=${currentDraggedId} targetTabId=${targetTabId}`);
+      setDraggedTabId(null);
+      setDragOverTabId(null);
+      draggingTabIdRef.current = null;
+      return;
+    }
 
-    const fromIndex = tabs.findIndex((t) => t.id === draggedTabId);
+    const fromIndex = tabs.findIndex((t) => t.id === currentDraggedId);
     const toIndex = tabs.findIndex((t) => t.id === targetTabId);
+    console.log(`[TAB-DRAG] drop REORDER fromIndex=${fromIndex} toIndex=${toIndex}`);
 
     if (fromIndex !== -1 && toIndex !== -1) {
       reorderTabs(fromIndex, toIndex);
     }
     setDraggedTabId(null);
+    setDragOverTabId(null);
+    draggingTabIdRef.current = null;
   };
 
   const pinnedTabs = tabs.filter((t) => t.isPinned);
@@ -68,10 +138,10 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
   return (
     <div
       className="flex items-center bg-[#2d2d2d] h-10 select-none"
-      data-tauri-drag-region
       onMouseDown={handleTabStripClick}
     >
-      <div className="h-full flex items-center">
+      {/* Window Controls */}
+      <div className="h-full flex items-center flex-shrink-0">
         <button
           onClick={handleMinimize}
           className="w-11 h-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-[#3d3d3d] transition-colors"
@@ -111,9 +181,9 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
         </button>
       </div>
 
+      {/* Tab Area - separate from window drag region */}
       <div
-        className="flex-1 flex items-center h-full overflow-x-auto min-w-0 scrollbar-none"
-        data-tauri-drag-region
+        className="flex items-center h-full overflow-x-auto min-w-0 scrollbar-none flex-shrink-0"
       >
         {pinnedTabs.map((tab) => (
           <div
@@ -123,11 +193,16 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
               activeTabId === tab.id
                 ? "bg-[#1a1a1a] text-white"
                 : "text-gray-300 hover:bg-[#383838]",
+              draggedTabId === tab.id && "opacity-50",
+              dragOverTabId === tab.id && "border-l-2 border-blue-400",
             )}
             onClick={() => onTabClick(tab.id)}
             draggable
             onDragStart={(e) => handleDragStart(e, tab.id)}
-            onDragOver={handleDragOver}
+            onDragEnter={(e) => handleDragEnter(e, tab.id)}
+            onDragEnd={handleDragEnd}
+            onDragOver={(e) => handleDragOver(e, tab.id)}
+            onDragLeave={(e) => handleDragLeave(e, tab.id)}
             onDrop={(e) => handleDrop(e, tab.id)}
             onContextMenu={(e) => handleContextMenu(e, tab.id)}
           >
@@ -173,11 +248,16 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
               activeTabId === tab.id
                 ? "bg-[#1a1a1a] text-white"
                 : "text-gray-300 hover:bg-[#383838]",
+              draggedTabId === tab.id && "opacity-50",
+              dragOverTabId === tab.id && "border-l-2 border-blue-400",
             )}
             onClick={() => onTabClick(tab.id)}
             draggable
             onDragStart={(e) => handleDragStart(e, tab.id)}
-            onDragOver={handleDragOver}
+            onDragEnter={(e) => handleDragEnter(e, tab.id)}
+            onDragEnd={handleDragEnd}
+            onDragOver={(e) => handleDragOver(e, tab.id)}
+            onDragLeave={(e) => handleDragLeave(e, tab.id)}
             onDrop={(e) => handleDrop(e, tab.id)}
             onContextMenu={(e) => handleContextMenu(e, tab.id)}
           >
@@ -208,7 +288,7 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
 
         <button
           onClick={onNewTab}
-          className="flex-shrink-0 w-10 h-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-[#3d3d3d] transition-colors ml-1"
+          className="flex-shrink-0 w-10 h-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-[#3d3d3d] transition-colors"
           title="New Tab (Ctrl+T)"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -217,7 +297,11 @@ export function TabBar({ onTabClick, onNewTab, onCloseTab }) {
         </button>
       </div>
 
-      <div className="flex-shrink-0 px-3 text-xs text-gray-500">{tabs.length}</div>
+      {/* Window Drag Spacer - ONLY this element has data-tauri-drag-region */}
+      {/* Tab area above is completely separate - no ancestor with drag-region */}
+      <div className="flex-1 flex items-center" data-tauri-drag-region>
+        <span className="px-3 text-xs text-gray-500">{tabs.length}</span>
+      </div>
 
       {contextMenu && (
         <div
